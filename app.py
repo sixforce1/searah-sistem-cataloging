@@ -611,21 +611,33 @@ elif selected_menu == MENU_LIST[3]:
     )
 
     st.markdown("**Blok Persetujuan (Footer SPF)**")
-    s1, s2, s3, s4 = st.columns(4)
-    spf_init_by = s1.text_input(
-        "Initiated By (Engineer/Supv)",
-        placeholder="Misal: TEGUH CAHYO / SLAMET SUBAGIO",
-    )
-    spf_end_mgr = s2.text_input(
-        "Endorsed By (Manager)", placeholder="Misal: BENTLY NURPATRIAWIRA"
-    )
-    spf_end_srmgr = s3.text_input(
-        "Endorsed By (Senior Manager)", placeholder="Misal: AULIA ARIF HIDAYAT"
-    )
-    spf_init_date = s4.text_input(
-        "Tanggal Tanda Tangan",
-        value=pd.Timestamp.now().strftime("%d %b %Y").upper(),
-    )
+        s1, s2, s3, s4 = st.columns(4)
+        spf_init_by = s1.text_input(
+            "Initiated By (Engineer/Supv)", placeholder="Nama Engineer / Supv"
+        )
+        spf_end_mgr = s2.text_input(
+            "Endorsed By (Manager)", placeholder="Nama Manager"
+        )
+        spf_end_srmgr = s3.text_input(
+            "Endorsed By (Senior Manager)", placeholder="Nama Senior Manager"
+        )
+        spf_init_date = s4.text_input(
+            "Tanggal Initiated",
+            value=pd.Timestamp.now().strftime("%d %b %Y").upper(),
+        )
+
+        s5, s6, s7 = st.columns(3)
+        spf_checked_inv = s5.text_input(
+            "Checked By (Inventory)", placeholder="Nama / Kode Inventory"
+        )
+        spf_reviewed_scm = s6.text_input(
+            "Reviewed By (Mgr Material & Supply Base)",
+            placeholder="Nama / Kode Mgr Material & SBM",
+        )
+        spf_approved_scm = s7.text_input(
+            "Approved By (Sr. Manager SCM)",
+            placeholder="Nama / Kode Sr. Manager SCM",
+        )
 
   st.subheader("2. Sumber Data Material")
   c_src1, c_src2, c_src3 = st.columns([2.4, 1.1, 1.1])
