@@ -1221,19 +1221,60 @@ def build_spf_bytes(
             est_lines = max(2, (len(long_val) // 75) + 1)
             ws.row_dimensions[r].height = max(28.0, min(160.0, est_lines * 16.5))
 
-        # Isi blok tanda tangan di footer
+        # Isi blok tanda tangan di footer (6 kolom approval)
         offset = max(0, n_items - base_capacity)
-        ws.cell(64 + offset, 1).value = str(meta.get("initiated_by", "")).strip().upper() or None
-        ws.cell(65 + offset, 1).value = (
-            f"DATE:  {str(meta['initiated_date']).strip().upper()}"
-            if meta.get("initiated_date") else "DATE:"
-        )
-        ws.cell(64 + offset, 7).value = str(meta.get("endorsed_mgr", "")).strip().upper() or None
-        ws.cell(64 + offset, 14).value = str(meta.get("endorsed_srmgr", "")).strip().upper() or None
+        header_row = 62 + offset
+        name_row = 64 + offset
+        date_row = 65 + offset
 
-        buf = io.BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
+        # Cari nomor kolom otomatis berdasarkan label header baris 62
+        col_by_label = {}
+        for c in range(1, 65):
+          lbl = str(ws.cell(header_row, c).value or "").upper()
+          if "INITIATED BY" in lbl:
+            col_by_label["init"] = c
+          elif "ENDORSED BY" in lbl and "SENIOR" not in lbl:
+            col_by_label["mgr"] = c
+          elif "SENIOR MANAGER" in lbl:
+            col_by_label["srmgr"] = c
+          elif "CHECKED BY" in lbl or "INVENTORY" in lbl:
+            col_by_label["inv"] = c
+          elif "REVIEWED BY" in lbl:
+            col_by_label["rev_scm"] = c
+          elif "APPROVED BY" in lbl:
+            col_by_label["app_scm"] = c
+
+        c_init = col_by_label.get("init", 1)
+        c_mgr = col_by_label.get("mgr", 7)
+        c_srmgr = col_by_label.get("srmgr", 14)
+        c_inv = col_by_label.get("inv", 26)
+        c_rev = col_by_label.get("rev_scm", 45)
+        c_app = col_by_label.get("app_scm", 55)
+
+        # Tulis nama (kosongkan 'NAME/CODE' jika user tidak mengisi)
+        ws.cell(name_row, c_init).value = (
+            str(meta.get("initiated_by", "")).strip().upper() or None
+        )
+        ws.cell(date_row, c_init).value = (
+            f"DATE:  {str(meta['initiated_date']).strip().upper()}"
+            if meta.get("initiated_date")
+            else "DATE:"
+        )
+        ws.cell(name_row, c_mgr).value = (
+            str(meta.get("endorsed_mgr", "")).strip().upper() or None
+        )
+        ws.cell(name_row, c_srmgr).value = (
+            str(meta.get("endorsed_srmgr", "")).strip().upper() or None
+        )
+        ws.cell(name_row, c_inv).value = (
+            str(meta.get("checked_inv", "")).strip().upper() or None
+        )
+        ws.cell(name_row, c_rev).value = (
+            str(meta.get("reviewed_scm", "")).strip().upper() or None
+        )
+        ws.cell(name_row, c_app).value = (
+            str(meta.get("approved_scm", "")).strip().upper() or None
+        )
 
     # Fallback jika template resmi tidak tersedia
     wb = openpyxl.Workbook()
