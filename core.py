@@ -1,0 +1,1085 @@
+"""core.py - Logika inti SEARAH Sistem Cataloging & SPF (dapat diuji tanpa Streamlit/Gemini).
+
+Alur:
+1. read_any / detect_columns      -> baca file SAP (xlsx/csv) dan deteksi kolom otomatis
+2. clean_text                     -> pembersihan teks untuk template (karakter rusak, pecahan, spasi)
+3. match_text                     -> teks internal untuk pencocokan (kamus sinonim)
+4. classify_rows                  -> label contoh -> aturan -> AI (opsional) -> REVIEW
+5. validate_template1 / build_template1_bytes -> validasi & file Template 1 (Source_Data_Upload)
+6. extract_template2_rows / validate_template2 / build_template2_bytes -> Template 2 (Extracted_Data)
+7. build_spf_bytes                -> file Stock Proposal Form (SPF)
+"""
+from __future__ import annotations
+
+import io
+import random
+import re
+import time
+
+import openpyxl
+import pandas as pd
+
+
+# ----------------------------------------------------------------------------
+# 1. Membaca file
+# ----------------------------------------------------------------------------
+def read_any(name: str, raw: bytes) -> pd.DataFrame:
+    """Baca xlsx atau csv. CSV dicoba UTF-8 dulu, lalu cp1252."""
+    if name.lower().endswith(".csv"):
+        for enc in ("utf-8-sig", "cp1252"):
+            try:
+                return pd.read_csv(
+                    io.BytesIO(raw), dtype=str, encoding=enc,
+                    keep_default_na=False
+                )
+            except UnicodeDecodeError:
+                continue
+        return pd.read_csv(
+            io.BytesIO(raw), dtype=str, encoding="latin1",
+            keep_default_na=False
+        )
+    return pd.read_excel(io.BytesIO(raw), dtype=str).fillna("")
+
+
+def detect_columns(cols) -> dict:
+    """Tebak kolom kode / short / long / uom dari nama header ekspor SAP."""
+    low = {c: str(c).lower() for c in cols}
+
+    def pick(pred):
+        for c, lc in low.items():
+            if pred(lc):
+                return c
+        return None
+
+    short = pick(lambda x: "description" in x or "short" in x)
+    long_ = pick(lambda x: "po text" in x or "long" in x)
+    uom = pick(lambda x: "unit" in x or "uom" in x)
+    code = pick(
+        lambda x: ("material" in x or "code" in x)
+        and "description" not in x
+    )
+
+    guess = [code, short, long_, uom]
+    fallback = list(cols)[:4]
+    return {
+        "code": code or (fallback[0] if fallback else None),
+        "short": short or (fallback[1] if len(fallback) > 1 else (fallback[0] if fallback else None)),
+        "long": long_ or (fallback[2] if len(fallback) > 2 else (fallback[0] if fallback else None)),
+        "uom": uom or (fallback[3] if len(fallback) > 3 else (fallback[0] if fallback else None)),
+        "_guessed": all(guess),
+    }
+
+
+def load_master(df_raw: pd.DataFrame):
+    """Material Standard -> (df_nm: pasangan noun|modifier, df_ms: semua atribut)."""
+    df = df_raw.fillna("").copy()
+    df.columns = [str(c).strip().upper() for c in df.columns]
+
+    for c in ("NOUN", "MODIFIER", "MANDATORY", "ATTRIBUTE"):
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip().str.upper()
+
+    if "SEQ" in df.columns:
+        df["SEQ"] = df["SEQ"].astype(str).str.strip().astype(int)
+
+    required = {"NOUN", "MODIFIER"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            "Kolom wajib tidak ditemukan di Material Standard: "
+            + ", ".join(sorted(missing))
+        )
+
+    df_nm = (
+        df[["NOUN", "MODIFIER"]]
+        .drop_duplicates()
+        .sort_values(["NOUN", "MODIFIER"])
+        .reset_index(drop=True)
+    )
+    return df_nm, df
+
+
+# ----------------------------------------------------------------------------
+# 2. Pembersihan teks (masuk ke template)
+# ----------------------------------------------------------------------------
+CHAR_FIXES = [
+    ("Â°", "°"),
+    ("GÇ¥", '"'),
+    ("GÇô", "-"),
+    ("GÇ£", '"'),
+    ("Â", ""),
+    ("”", '"'), ("“", '"'),
+    ("’", "'"), ("‘", "'"),
+    ("–", "-"), ("—", "-"),
+    ("\xa0", " "),
+]
+ASCII_SYMBOLS = [
+    ("®", ""), ("™", ""), ("•", "-"),
+    ("±", "+/-"), ("³", "3")
+]
+
+
+def clean_text(s, ascii_symbols: bool = False) -> str:
+    s = "" if s is None else str(s)
+
+    for a, b in CHAR_FIXES:
+        s = s.replace(a, b)
+
+    for ch, frac in (("½", "1/2"), ("¼", "1/4"), ("¾", "3/4")):
+        s = re.sub(rf"(\d){ch}", rf"\1-{frac}", s)
+        s = s.replace(ch, frac)
+
+    if ascii_symbols:
+        for a, b in ASCII_SYMBOLS:
+            s = s.replace(a, b)
+
+    s = re.sub(r"[\t\r\n]+", " ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
+# ----------------------------------------------------------------------------
+# 3. Teks internal untuk pencocokan (kamus sinonim)
+# ----------------------------------------------------------------------------
+SYNONYMS = [
+    (r"\bPUP ?JOINTS?\b", "PUP JOINT"),
+    (r"\bTBG\b", "TUBING"),
+    (r"\bCSG\b", "CASING"),
+    (r"\bX-?OVER\b|\bCROSS ?OVER\b", "CROSSOVER"),
+    (r"\bHAND ?GLOVES?\b", "HAND GLOVE"),
+    (r"\b(?:V-?BELTS?|BELT-?V)\b", "BELT V"),
+    (r"\bELEC(?:TRIC)?\b", "ELECTRICAL"),
+    (r"\bPNEU\b", "PNEUMATIC"),
+    (r"\bTRUST\b", "THRUST"),
+]
+
+
+def match_text(s) -> str:
+    t = str(s or "").upper()
+    for pat, rep in SYNONYMS:
+        t = re.sub(pat, rep, t)
+    return t
+
+
+# ----------------------------------------------------------------------------
+# 4. Konteks & Klasifikasi (Template 1)
+# ----------------------------------------------------------------------------
+def build_context(
+    df_nm: pd.DataFrame,
+    labeled: pd.DataFrame | None = None
+) -> dict:
+    """Siapkan struktur pencarian dari master dan file contoh berlabel (Template 2 terisi)."""
+    ctx = {
+        "valid": set(zip(df_nm["NOUN"], df_nm["MODIFIER"])),
+        "nouns": set(df_nm["NOUN"]),
+        "mods_by_noun": df_nm.groupby("NOUN")["MODIFIER"].apply(list).to_dict(),
+        "pairs_text": "\n".join(
+            f"{n} | {m}" for n, m in zip(df_nm["NOUN"], df_nm["MODIFIER"])
+        ),
+        "labels": {},
+        "index": [],
+        "attr_examples": {},
+    }
+
+    if labeled is not None and not labeled.empty:
+        lab = labeled.fillna("")
+        required = {
+            "PSC Material Code", "Noun", "Modifier",
+            "Material - Long Description"
+        }
+        missing = required - set(lab.columns)
+        if missing:
+            raise ValueError(
+                "Kolom wajib Template 2 tidak ditemukan: "
+                + ", ".join(sorted(missing))
+            )
+
+        first = lab[
+            lab["Material - Long Description"].astype(str).str.strip() != ""
+        ]
+
+        for _, r in first.iterrows():
+            code = str(r["PSC Material Code"]).strip()
+            noun = str(r["Noun"]).strip().upper()
+            mod = str(r["Modifier"]).strip().upper()
+            text = str(r["Material - Long Description"])
+            ctx["labels"][code] = (noun, mod)
+            ctx["index"].append((_tokens(text), text, noun, mod))
+
+        if {"Attribute", "Value"}.issubset(set(lab.columns)):
+            grouped = {}
+            cur_code = None
+            cur_nm = None
+            cur_desc = ""
+            cur_attrs = {}
+            for _, r in lab.iterrows():
+                mc = str(r["PSC Material Code"]).strip()
+                desc = str(r["Material - Long Description"]).strip()
+                if desc:
+                    if cur_code and cur_nm and cur_attrs:
+                        grouped.setdefault(cur_nm, []).append((cur_desc, cur_attrs))
+                    cur_code = mc
+                    cur_nm = (str(r["Noun"]).strip().upper(), str(r["Modifier"]).strip().upper())
+                    cur_desc = desc
+                    cur_attrs = {}
+                attr = str(r["Attribute"]).strip().upper()
+                val = str(r["Value"]).strip().upper()
+                if attr and val:
+                    cur_attrs[attr] = val
+            if cur_code and cur_nm and cur_attrs:
+                grouped.setdefault(cur_nm, []).append((cur_desc, cur_attrs))
+            ctx["attr_examples"] = grouped
+
+    return ctx
+
+
+def _tokens(text: str) -> frozenset:
+    return frozenset(re.findall(r"[A-Z]{3,}", match_text(text)))
+
+
+def similar_examples(
+    text: str,
+    ctx: dict,
+    k: int = 3,
+    exclude_text: str | None = None
+) -> list:
+    """k contoh berlabel paling mirip (Jaccard pada kata) untuk few-shot AI."""
+    q = _tokens(text)
+    if not q or not ctx["index"]:
+        return []
+
+    scored = []
+    for toks, t, noun, mod in ctx["index"]:
+        if exclude_text is not None and t == exclude_text:
+            continue
+        inter = len(q & toks)
+        if inter:
+            scored.append((inter / len(q | toks), t, noun, mod))
+
+    scored.sort(key=lambda x: -x[0])
+    return [(t, n, m) for _, t, n, m in scored[:k]]
+
+
+def _first_token(t: str) -> str:
+    return re.split(r"[,;]", t)[0].strip()
+
+
+def rule_classify(short: str, long: str, ctx: dict):
+    """Aturan berpresisi tinggi. Return tuple atau None."""
+    s, l = match_text(short), match_text(long)
+    comb = f"{s} , {l}"
+    valid = ctx["valid"]
+    mods_by_noun = ctx["mods_by_noun"]
+
+    if (
+        re.match(r"^CROSSOVER\b", _first_token(l))
+        or re.match(r"^CROSSOVER\b", _first_token(s))
+    ):
+        if ("CROSS-OVER", "--") in valid:
+            return (
+                "CROSS-OVER", "--", 90, "ATURAN",
+                "Kata pertama CROSSOVER/X-OVER"
+            )
+
+    if re.search(r"\bPUP\b", comb) and re.search(
+        r"\bPUP JOINT\b|\bPUP\b.*\b(CASING|TUBING)\b|"
+        r"\b(CASING|TUBING)\b.*\bPUP\b",
+        comb
+    ):
+        mod = (
+            "TUBING"
+            if re.search(r"\bTUBING\b", comb)
+            and not re.search(r"\bCASING\b", comb)
+            else "CASING"
+        )
+        if ("PUP JOINT", mod) in valid:
+            return (
+                "PUP JOINT", mod, 78, "ATURAN",
+                f"PUP JOINT + kata {mod}"
+            )
+
+    for tok in (_first_token(l), _first_token(s)):
+        if tok in mods_by_noun:
+            for mod in sorted(mods_by_noun[tok], key=len, reverse=True):
+                if mod != "--" and re.search(
+                    rf"\b{re.escape(mod)}\b", comb
+                ):
+                    return (
+                        tok, mod, 80, "ATURAN",
+                        f"Noun + modifier tertulis ({tok} | {mod})"
+                    )
+
+    return None
+
+
+# ---- AI Helper & Error Handling ---------------------------------------------
+class AIFatalError(Exception):
+    """Error AI yang tidak akan sembuh dengan mengulang (kunci, model, kuota)."""
+
+
+def is_fatal_error(error: Exception) -> bool:
+    """Kunci salah, model tidak ada/sudah dimatikan, izin ditolak, kuota harian habis."""
+    status = getattr(error, "status_code", None) or getattr(error, "code", None)
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+    if status in (400, 401, 403, 404):
+        return True
+    msg = str(error).upper()
+    fatal_terms = (
+        "ACCESS_TOKEN_TYPE_UNSUPPORTED", "UNAUTHENTICATED", "API_KEY_INVALID",
+        "API KEY NOT VALID", "PERMISSION_DENIED", "NO LONGER AVAILABLE",
+        "NOT_FOUND", "PERDAY", "PER_DAY", "LIMIT: 0",
+    )
+    return any(term in msg for term in fatal_terms)
+
+
+def _is_retryable(error: Exception) -> bool:
+    status = (
+        getattr(error, "status_code", None)
+        or getattr(error, "code", None)
+    )
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = None
+
+    if status in (408, 425, 429, 500, 502, 503, 504):
+        return True
+
+    msg = str(error).upper()
+    retry_terms = (
+        "503", "UNAVAILABLE",
+        "429", "RESOURCE_EXHAUSTED",
+        "500", "INTERNAL SERVER ERROR",
+        "502", "BAD GATEWAY",
+        "504", "GATEWAY TIMEOUT",
+        "408", "TIMEOUT", "TIMED OUT",
+        "CONNECTION RESET", "CONNECTION ERROR",
+        "TEMPORARILY", "TEMPORARY",
+    )
+    return any(term in msg for term in retry_terms)
+
+
+def make_gemini_batch_fn(
+    api_key: str,
+    model: str,
+    ctx: dict,
+    retries: int = 5,
+    base_delay: float = 2,
+    max_delay: float = 30,
+):
+    """Kembalikan fungsi f(payload) -> {row_index: (noun, modifier, conf, alasan)}."""
+    from google import genai
+    from google.genai import types
+    from pydantic import BaseModel
+
+    class Item(BaseModel):
+        row_index: int
+        noun: str
+        modifier: str
+        confidence: int
+        reason: str
+
+    class Result(BaseModel):
+        items: list[Item]
+
+    client = genai.Client(api_key=api_key.strip())
+
+    def run(payload: list[dict]) -> dict:
+        blocks = []
+
+        for p in payload:
+            examples = "\n".join(
+                f"   - {t[:200]} => {n} | {m}"
+                for t, n, m in p.get("examples", [])
+            )
+
+            block = (
+                f"[row_index {p['row_index']}]\n"
+                f"SHORT: {p['short'][:150]}\n"
+                f"PO TEXT: {p['long'][:600]}"
+            )
+            if examples:
+                block += (
+                    "\nCONTOH SERUPA (sudah dikatalogkan):\n"
+                    + examples
+                )
+            blocks.append(block)
+
+        prompt = (
+            "Anda cataloguer senior SKK Migas. Untuk SETIAP item, pilih "
+            "tepat satu pasangan NOUN | MODIFIER dari DAFTAR RESMI.\n"
+            "Catatan penting:\n"
+            "- SHORT dibatasi 40 karakter dan sering disingkat/terpotong "
+            "(PUPJOINT, X-OVER, TBG=tubing, CSG=casing). PO TEXT lebih "
+            "lengkap; utamakan PO TEXT.\n"
+            "- Tentukan benda utamanya, bukan peralatan tempat ia dipasang.\n"
+            "- 'SPARE PARTS | --' sah dipakai untuk suku cadang yang tidak "
+            "punya kelas sendiri.\n"
+            "- Ikuti pola CONTOH SERUPA bila relevan. Jangan mengarang "
+            "pasangan di luar daftar.\n"
+            "- confidence 0-100 (jujur; turunkan bila ragu).\n\n"
+            "ITEM:\n"
+            + "\n\n".join(blocks)
+            + "\n\nDAFTAR RESMI:\n"
+            + ctx["pairs_text"]
+        )
+
+        last_error = None
+        total_attempts = max(1, int(retries))
+
+        for attempt in range(total_attempts):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=Result,
+                    ),
+                )
+
+                if not getattr(response, "text", None):
+                    raise ValueError("Gemini mengembalikan respons kosong.")
+
+                parsed = Result.model_validate_json(response.text)
+
+                return {
+                    item.row_index: (
+                        item.noun.strip().upper(),
+                        item.modifier.strip().upper(),
+                        item.confidence,
+                        item.reason,
+                    )
+                    for item in parsed.items
+                }
+
+            except Exception as error:
+                last_error = error
+                if is_fatal_error(error):
+                    raise AIFatalError(str(error)[:500]) from error
+                if not _is_retryable(error):
+                    raise
+                if attempt < total_attempts - 1:
+                    delay = min(
+                        float(base_delay) * (2 ** attempt),
+                        float(max_delay),
+                    )
+                    delay += random.uniform(0, min(1.0, delay * 0.2))
+                    time.sleep(delay)
+
+        raise last_error
+
+    return run
+
+
+def classify_rows(
+    rows: list[dict],
+    ctx: dict,
+    ai_batch=None,
+    batch_size: int = 5,
+    progress=None
+) -> list[dict]:
+    """Klasifikasi: label contoh -> aturan -> AI -> REVIEW."""
+    results: dict[int, tuple] = {}
+    pending: list[int] = []
+    errors: dict[int, str] = {}
+    fatal_message = None
+
+    for i, row in enumerate(rows):
+        label = ctx["labels"].get(row["code"])
+
+        if label and label in ctx["valid"]:
+            results[i] = (
+                label[0], label[1], 100,
+                "CONTOH", "Label dari file contoh berlabel"
+            )
+            continue
+
+        rule = rule_classify(row["short"], row["long"], ctx)
+        if rule:
+            results[i] = rule
+        else:
+            pending.append(i)
+
+    if ai_batch is not None and pending:
+        safe_batch_size = max(1, int(batch_size))
+
+        for start in range(0, len(pending), safe_batch_size):
+            chunk = pending[start:start + safe_batch_size]
+
+            payload = [
+                {
+                    "row_index": i,
+                    "short": rows[i]["short"],
+                    "long": rows[i]["long"],
+                    "examples": similar_examples(
+                        rows[i]["long"] or rows[i]["short"],
+                        ctx
+                    ),
+                }
+                for i in chunk
+            ]
+
+            try:
+                decisions = ai_batch(payload)
+                if not isinstance(decisions, dict):
+                    raise TypeError("Hasil AI harus berupa dictionary berdasarkan row_index.")
+            except AIFatalError as error:
+                decisions = {}
+                fatal_message = str(error)[:500]
+                for i in chunk:
+                    errors[i] = fatal_message
+            except Exception as error:
+                decisions = {}
+                message = str(error)[:500]
+                for i in chunk:
+                    errors[i] = message
+
+            for i in chunk:
+                decision = decisions.get(i)
+
+                if not decision:
+                    note = (
+                        f"Gagal AI: {errors[i]}"
+                        if i in errors
+                        else "AI tidak mengembalikan hasil untuk baris ini."
+                    )
+                    results[i] = ("", "", 0, "REVIEW", note)
+                    continue
+
+                try:
+                    noun, modifier, confidence, reason = decision
+                    noun = str(noun).strip().upper()
+                    modifier = str(modifier).strip().upper()
+                    confidence = max(0, min(100, int(confidence)))
+                    reason = str(reason)
+
+                    if (noun, modifier) in ctx["valid"]:
+                        results[i] = (noun, modifier, confidence, "AI", reason)
+                    else:
+                        results[i] = (
+                            "", "", 0, "REVIEW",
+                            "AI mengusulkan pasangan tidak ada di master: "
+                            f"{noun} | {modifier}"
+                        )
+                except (TypeError, ValueError) as error:
+                    results[i] = (
+                        "", "", 0, "REVIEW",
+                        f"Format jawaban AI tidak valid: {error}"
+                    )
+
+            if fatal_message:
+                for j in pending[start + len(chunk):]:
+                    results[j] = (
+                        "", "", 0, "REVIEW",
+                        f"AI dihentikan: {fatal_message}"
+                    )
+                if progress:
+                    progress(len(pending), len(pending))
+                break
+
+            if progress:
+                progress(min(start + len(chunk), len(pending)), len(pending))
+
+    output = []
+    for i, _row in enumerate(rows):
+        noun, modifier, confidence, source, note = results.get(
+            i, ("", "", 0, "REVIEW", "Belum diklasifikasi")
+        )
+        output.append({
+            "noun": noun,
+            "modifier": modifier,
+            "confidence": confidence,
+            "source": source,
+            "note": note,
+        })
+
+    return output
+
+
+# ----------------------------------------------------------------------------
+# 5. Template 1: validasi dan pembuatan file
+# ----------------------------------------------------------------------------
+LIMITS = {
+    "code": 20,
+    "noun": 30,
+    "modifier": 30,
+    "short": 100,
+    "long": 3000,
+    "uom": 10,
+}
+
+
+def make_short(long: str, limit: int = 100) -> str:
+    """Potong PO Text rapi (di koma/spasi) agar muat batas Short Description."""
+    if len(long) <= limit:
+        return long
+
+    cut = long[:limit]
+    idx = max(cut.rfind(","), cut.rfind(" "))
+    return (cut[:idx] if idx > 40 else cut).rstrip(" ,;")
+
+
+def parse_uom_map(text: str) -> dict:
+    mapping = {}
+    for line in (text or "").splitlines():
+        if "=" in line:
+            source, target = line.split("=", 1)
+            if source.strip():
+                mapping[source.strip().upper()] = target.strip().upper()
+    return mapping
+
+
+def validate_template1(
+    df: pd.DataFrame,
+    valid_pairs: set
+) -> pd.DataFrame:
+    """df kolom: code, noun, modifier, short, long, uom. Return tabel masalah."""
+    issues = []
+
+    required = ["code", "noun", "modifier", "short", "long", "uom"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(
+            "Kolom validasi Template 1 tidak ditemukan: "
+            + ", ".join(missing)
+        )
+
+    def add(index, field, message):
+        issues.append({
+            "baris": index + 1,
+            "kode": df.iloc[index]["code"],
+            "kolom": field,
+            "masalah": message,
+        })
+
+    duplicates = df["code"].duplicated(keep=False)
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+
+        if not str(row["code"]).strip():
+            add(i, "code", "Kode material kosong")
+
+        if duplicates.iloc[i]:
+            add(i, "code", "Kode material duplikat")
+
+        noun = str(row["noun"]).strip()
+        modifier = str(row["modifier"]).strip()
+
+        if not noun or not modifier:
+            add(i, "noun/modifier", "Belum diklasifikasi")
+        elif (noun, modifier) not in valid_pairs:
+            add(
+                i, "noun/modifier",
+                f"Pasangan tidak ada di master: {noun} | {modifier}"
+            )
+
+        if not str(row["long"]).strip():
+            add(i, "long", "Long Description kosong")
+
+        if not str(row["uom"]).strip():
+            add(i, "uom", "Uom kosong")
+
+        for field, limit in LIMITS.items():
+            length = len(str(row[field]))
+            if length > limit:
+                add(
+                    i, field,
+                    f"Melebihi {limit} karakter ({length})"
+                )
+
+    return pd.DataFrame(
+        issues,
+        columns=["baris", "kode", "kolom", "masalah"]
+    )
+
+
+FORMAT_ROWS = [
+    [
+        "INTEGER", "ALPHANUMERIC", "ALPHANUMERIC",
+        "ALPHANUMERIC", "ALPHANUMERIC", "ALPHANUMERIC",
+        "ALPHANUMERIC", "HEADER DATA", "DATA TYPE"
+    ],
+    [
+        "No. of the material data ",
+        "The Code/KEYMAP# of the material",
+        "NOUN as per the CLASS master",
+        "MODIFIER as per the CLASS master",
+        "Short description of the material",
+        "Long description of the material",
+        "Uom of the material",
+        None,
+        "DESCRIPTION"
+    ],
+    ["2", "20", "30", "30", "100", "3000", "10", None, "SIZE"],
+    [
+        "No.", "PSC Material code", "Noun", "Modifier",
+        "Material - Short Description",
+        "Material - Long Description", "Uom", None, "HEADER"
+    ],
+]
+
+
+def build_template1_bytes(df: pd.DataFrame) -> bytes:
+    """Buat file Template 1."""
+    required = ["code", "noun", "modifier", "short", "long", "uom"]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(
+            "Kolom untuk membuat Template 1 tidak ditemukan: "
+            + ", ".join(missing)
+        )
+
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Source_Data_Upload"
+
+    worksheet.append([
+        "No.", "PSC Material Code", "Noun", "Modifier",
+        "Material - Short Description",
+        "Material - Long Description", "Uom"
+    ])
+
+    for number, row in enumerate(
+        df[required].itertuples(index=False, name="MaterialRow"),
+        start=1
+    ):
+        worksheet.append([
+            number,
+            row.code,
+            row.noun,
+            row.modifier,
+            row.short,
+            row.long,
+            row.uom,
+        ])
+
+    format_sheet = workbook.create_sheet("Source_Data_Upload_Format")
+    for row in FORMAT_ROWS:
+        format_sheet.append(row)
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+# ----------------------------------------------------------------------------
+# 6. Template 2 (Extracted_Data): Ekstraksi Atribut & Pembuatan File
+# ----------------------------------------------------------------------------
+TEMPLATE2_COLUMNS = [
+    "No.", "PSC Code", "PSC Material Code", "Ref.No",
+    "Noun", "Modifier", "Sequence Number", "Attribute",
+    "Value", "Remarks", "Mandatory", "Uom", "Material - Long Description"
+]
+
+
+def make_gemini_extract_fn(
+    api_key: str,
+    model: str,
+    retries: int = 5,
+    base_delay: float = 2,
+    max_delay: float = 30,
+):
+    """Kembalikan fungsi f(noun, modifier, long_desc, schema_rows, examples) -> {seq: value}."""
+    from google import genai
+    from google.genai import types
+    from pydantic import BaseModel
+
+    class AttrVal(BaseModel):
+        seq: int
+        value: str
+
+    class ExtractOut(BaseModel):
+        values: list[AttrVal]
+
+    client = genai.Client(api_key=api_key.strip())
+
+    def run(
+        noun: str,
+        modifier: str,
+        long_desc: str,
+        schema_rows: list[dict],
+        examples: list[tuple[str, dict]] | None = None,
+    ) -> dict[int, str]:
+        schema_lines = "\n".join(
+            f"- SEQ {r['seq']} | Mandatory={r['mandatory']} | Attribute={r['attribute']}"
+            for r in schema_rows
+        )
+
+        ex_block = ""
+        if examples:
+            ex_lines = []
+            for ex_desc, ex_map in examples[:2]:
+                pairs = ", ".join(f"{k}: {v}" for k, v in ex_map.items())
+                ex_lines.append(f"  Deskripsi: {ex_desc[:250]}\n  Hasil: {pairs}")
+            ex_block = "\nCONTOH FORMAT PENGISIAN E-CATALOGING SEBELUMNYA:\n" + "\n".join(ex_lines) + "\n"
+
+        prompt = (
+            "Anda adalah cataloguer senior SKK Migas. Ekstrak nilai spesifikasi dari DESKRIPSI MATERIAL "
+            "ke dalam daftar ATRIBUT BAKU di bawah ini.\n"
+            "Aturan wajib:\n"
+            "- Semua nilai (value) wajib HURUF KAPITAL (UPPERCASE).\n"
+            "- Jika informasi tidak tercantum di deskripsi, isi string kosong (''). Jangan mengarang nilai.\n"
+            "- Gunakan satuan dan penulisan standar SKK Migas seperti pada contoh (misal: '5 IN', '13 PPF', "
+            "'GRADE L80', 'API SPEC 5CT', 'STAINLESS STEEL-316', 'CLASS 150', '150 PSI').\n"
+            "- Jika ada spesifikasi teknis sisa yang penting namun tidak punya slot atribut khusus, masukkan ke "
+            "'ADDITIONAL DETAILS' (bila atribut tersebut tersedia di skema).\n\n"
+            f"NOUN: {noun}\n"
+            f"MODIFIER: {modifier}\n"
+            f"DESKRIPSI MATERIAL: \"{long_desc}\"\n"
+            f"{ex_block}\n"
+            f"SKEMA ATRIBUT:\n{schema_lines}"
+        )
+
+        last_error = None
+        total_attempts = max(1, int(retries))
+
+        for attempt in range(total_attempts):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=ExtractOut,
+                    ),
+                )
+                if not getattr(response, "text", None):
+                    raise ValueError("Gemini mengembalikan respons kosong.")
+                parsed = ExtractOut.model_validate_json(response.text)
+                return {
+                    int(item.seq): str(item.value or "").strip().upper()
+                    for item in parsed.values
+                }
+            except Exception as error:
+                last_error = error
+                if is_fatal_error(error):
+                    raise AIFatalError(str(error)[:500]) from error
+                if not _is_retryable(error):
+                    raise
+                if attempt < total_attempts - 1:
+                    delay = min(float(base_delay) * (2 ** attempt), float(max_delay))
+                    delay += random.uniform(0, min(1.0, delay * 0.2))
+                    time.sleep(delay)
+
+        raise last_error
+
+    return run
+
+
+def extract_template2_rows(
+    items: list[dict],
+    df_ms: pd.DataFrame,
+    ctx: dict | None = None,
+    ai_extract=None,
+    psc_code: str = "",
+    ref_prefix: str = "",
+    progress=None,
+) -> tuple[pd.DataFrame, str | None]:
+    """Bangun tabel panjang Template 2 (1 baris per atribut per material)."""
+    if not {"SEQ", "MANDATORY", "ATTRIBUTE"}.issubset(set(df_ms.columns)):
+        raise ValueError("File Material Standard tidak memiliki kolom SEQ, MANDATORY, dan ATTRIBUTE.")
+
+    schema_cache: dict[tuple[str, str], list[dict]] = {}
+    out_rows = []
+    seq_no = 1
+    fatal_error = None
+    total = len(items)
+
+    for idx, item in enumerate(items):
+        code = str(item.get("code", "")).strip()
+        noun = str(item.get("noun", "")).strip().upper()
+        mod = str(item.get("modifier", "")).strip().upper()
+        long_desc = str(item.get("long", "")).strip()
+        uom = str(item.get("uom", "")).strip().upper()
+
+        item_ref = str(item.get("ref_no", "")).strip()
+        if not item_ref and ref_prefix.strip():
+            item_ref = f"{ref_prefix.strip()}_{idx + 1}"
+
+        key = (noun, mod)
+        if key not in schema_cache:
+            sub = df_ms[(df_ms["NOUN"] == noun) & (df_ms["MODIFIER"] == mod)].sort_values("SEQ")
+            schema_cache[key] = [
+                {
+                    "seq": int(r["SEQ"]),
+                    "mandatory": str(r["MANDATORY"]).strip().upper(),
+                    "attribute": str(r["ATTRIBUTE"]).strip().upper(),
+                }
+                for _, r in sub.iterrows()
+            ]
+
+        schema_rows = schema_cache[key]
+        val_map: dict[int, str] = {}
+        remark_seq1 = ""
+
+        if not schema_rows:
+            out_rows.append({
+                "No.": str(seq_no),
+                "PSC Code": psc_code.strip(),
+                "PSC Material Code": code,
+                "Ref.No": item_ref,
+                "Noun": noun,
+                "Modifier": mod,
+                "Sequence Number": "1",
+                "Attribute": "",
+                "Value": "",
+                "Remarks": f"Skema atribut tidak ditemukan di Material Standard untuk {noun} | {mod}",
+                "Mandatory": "",
+                "Uom": uom,
+                "Material - Long Description": long_desc,
+            })
+            seq_no += 1
+            if progress:
+                progress(idx + 1, total)
+            continue
+
+        if ai_extract is not None and fatal_error is None:
+            ex_list = (ctx or {}).get("attr_examples", {}).get(key, [])
+            try:
+                val_map = ai_extract(noun, mod, long_desc, schema_rows, ex_list)
+            except AIFatalError as err:
+                fatal_error = str(err)[:500]
+                remark_seq1 = f"AI dihentikan: {fatal_error}"
+            except Exception as err:
+                remark_seq1 = f"Gagal ekstrak AI: {str(err)[:300]}"
+        elif fatal_error is not None:
+            remark_seq1 = f"AI dihentikan: {fatal_error}"
+
+        for s_row in schema_rows:
+            s_num = s_row["seq"]
+            is_first = (s_num == 1)
+            out_rows.append({
+                "No.": str(seq_no),
+                "PSC Code": psc_code.strip(),
+                "PSC Material Code": code,
+                "Ref.No": item_ref,
+                "Noun": noun,
+                "Modifier": mod,
+                "Sequence Number": str(s_num),
+                "Attribute": s_row["attribute"],
+                "Value": val_map.get(s_num, ""),
+                "Remarks": remark_seq1 if is_first else "",
+                "Mandatory": s_row["mandatory"],
+                "Uom": uom if is_first else "",
+                "Material - Long Description": long_desc if is_first else "",
+            })
+            seq_no += 1
+
+        if progress:
+            progress(idx + 1, total)
+
+    return pd.DataFrame(out_rows, columns=TEMPLATE2_COLUMNS), fatal_error
+
+
+def validate_template2(df: pd.DataFrame) -> pd.DataFrame:
+    """Periksa atribut Mandatory (M) yang masih kosong pada Template 2."""
+    issues = []
+    if df.empty:
+        return pd.DataFrame(columns=["baris", "kode", "noun_modifier", "atribut", "masalah"])
+
+    for i, r in df.iterrows():
+        mand = str(r.get("Mandatory", "")).strip().upper()
+        val = str(r.get("Value", "")).strip()
+        if mand == "M" and not val:
+            issues.append({
+                "baris": i + 1,
+                "kode": r.get("PSC Material Code", ""),
+                "noun_modifier": f"{r.get('Noun', '')} | {r.get('Modifier', '')}",
+                "atribut": f"SEQ {r.get('Sequence Number', '')} - {r.get('Attribute', '')}",
+                "masalah": "Atribut Mandatory (M) belum terisi",
+            })
+    return pd.DataFrame(issues, columns=["baris", "kode", "noun_modifier", "atribut", "masalah"])
+
+
+def build_template2_bytes(df: pd.DataFrame, sheet_name: str = "Extracted_Data") -> bytes:
+    """Buat file Excel Template 2 (Extracted_Data) sesuai format baku SKK Migas."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_name[:31]
+
+    header_font = openpyxl.styles.Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="1F4E78")
+
+    ws.append(TEMPLATE2_COLUMNS)
+    for c_idx in range(1, len(TEMPLATE2_COLUMNS) + 1):
+        cell = ws.cell(1, c_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for row_num, (_, r) in enumerate(df.iterrows(), start=1):
+        ws.append([
+            str(row_num),
+            str(r.get("PSC Code", "")).strip(),
+            str(r.get("PSC Material Code", "")).strip(),
+            str(r.get("Ref.No", "")).strip(),
+            str(r.get("Noun", "")).strip().upper(),
+            str(r.get("Modifier", "")).strip().upper(),
+            str(r.get("Sequence Number", "")).strip(),
+            str(r.get("Attribute", "")).strip().upper(),
+            str(r.get("Value", "")).strip().upper(),
+            str(r.get("Remarks", "")).strip(),
+            str(r.get("Mandatory", "")).strip().upper(),
+            str(r.get("Uom", "")).strip().upper(),
+            str(r.get("Material - Long Description", "")).strip(),
+        ])
+
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+# ----------------------------------------------------------------------------
+# 7. Stock Proposal Form (SPF)
+# ----------------------------------------------------------------------------
+def build_spf_bytes(df_spf: pd.DataFrame, meta: dict) -> bytes:
+    """Bangun file Excel Stock Proposal Form (SPF)."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Stock_Proposal_Form"
+
+    header_font = openpyxl.styles.Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = openpyxl.styles.PatternFill(fill_type="solid", fgColor="1F4E78")
+    title_font = openpyxl.styles.Font(name="Calibri", size=14, bold=True)
+    meta_font = openpyxl.styles.Font(name="Calibri", size=10, bold=True)
+
+    ws["A1"] = "STOCK PROPOSAL FORM (SPF) - SEARAH"
+    ws["A1"].font = title_font
+
+    ws["A2"] = "Requestor / Dept:"
+    ws["A2"].font = meta_font
+    ws["B2"] = meta.get("requestor", "")
+
+    ws["E2"] = "Plant / Storage Loc:"
+    ws["E2"].font = meta_font
+    ws["F2"] = meta.get("plant", "")
+
+    ws["A3"] = "Field / Project:"
+    ws["A3"].font = meta_font
+    ws["B3"] = meta.get("field", "")
+
+    ws["E3"] = "Date:"
+    ws["E3"].font = meta_font
+    ws["F3"] = meta.get("date", "")
+
+    start_row = 5
+    cols = list(df_spf.columns)
+    for c_idx, col_name in enumerate(cols, start=1):
+        cell = ws.cell(start_row, c_idx, col_name)
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for r_offset, (_, row) in enumerate(df_spf.iterrows(), start=1):
+        for c_idx, col_name in enumerate(cols, start=1):
+            val = row[col_name]
+            ws.cell(start_row + r_offset, c_idx, "" if pd.isna(val) else str(val))
+
+    ws.freeze_panes = f"A{start_row + 1}"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
