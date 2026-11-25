@@ -54,6 +54,26 @@ def cached_master(raw: bytes):
 def cached_labeled(raw: bytes):
     return pd.read_excel(io.BytesIO(raw), dtype=str).fillna("")
 
+@st.cache_data(show_spinner=False)
+def cached_mat_groups(raw: bytes) -> tuple[list[str], list[str]]:
+  df_mg = pd.read_excel(io.BytesIO(raw), header=None, dtype=str).fillna("")
+  # Lewati baris pertama jika ternyata berupa header teks
+  if not df_mg.empty and df_mg.iloc[0, 0].strip().lower() in (
+      "code",
+      "kode",
+      "material group",
+      "matl group",
+  ):
+    df_mg = df_mg.iloc[1:]
+  options = []
+  codes = []
+  for _, r in df_mg.iterrows():
+    c = str(r[0]).strip().upper()
+    d = str(r[1]).strip() if len(r) > 1 else ""
+    if c:
+      codes.append(c)
+      options.append(f"{c} - {d}" if d else c)
+  return options, codes
 
 def apply_edits(base: pd.DataFrame, edits: dict) -> pd.DataFrame:
     current = base.copy()
@@ -521,6 +541,54 @@ elif selected_menu == MENU_LIST[3]:
         "dengan perhitungan panjang Short Text 40 karakter SAP otomatis."
     )
 
+    # Muat daftar Material Type / Group dari file lokal (2.179 item)
+    mg_path = find_local(lambda fn: "material group" in fn and fn.endswith(".xlsx"))
+    mg_raw = open(mg_path, "rb").read() if mg_path else None
+    mg_options, mg_codes = cached_mat_groups(mg_raw) if mg_raw else ([], [])
+
+    # Daftar SAP Valuation Class sesuai master SAP
+    VAL_CLASS_OPTIONS = [
+        "1210 - Spec.complex fixed assets",
+        "4010 - Automotive",
+        "4020 - Chemicals",
+        "4030 - Containers",
+        "4040 - Drilling Equipment A",
+        "4050 - Electrical",
+        "4060 - Heating Ventilation",
+        "4070 - Instrumentation",
+        "4080 - Insulation",
+        "4090 - Linepipes",
+        "4100 - Mechanical",
+        "4110 - Marine Vessel",
+        "4120 - Office / Residential",
+        "4130 - Rotating Equipment",
+        "4140 - Riser / Flowlines",
+        "4150 - Safety And Protection",
+        "4160 - Structural",
+        "4170 - Subsea",
+        "4180 - Telecommunication Eq",
+        "4190 - Valves",
+        "4200 - Miscellaneous",
+        "4210 - Workshop Tools & Equ",
+        "4220 - Warehouse Equipment",
+        "4999 - Tax-Others(Vietnam Only)",
+        "ZP01 - Dentistry Supplies",
+        "ZP02 - Dialysis Supplies",
+        "ZP03 - Implants",
+        "ZP04 - Laboratory Supplies",
+        "ZP05 - Labour Room Supplies",
+        "ZP06 - Medical & Surgical Supp.",
+        "ZP07 - Medication",
+        "ZP08 - Operation Theatre Supp.",
+        "ZP09 - Radiology Supplies",
+        "ZP10 - Rehab./Physio. Supp.",
+        "ZP11 - Hospital Stationeries",
+        "ZP12 - Household & Office",
+        "ZP13 - Hospital Linen",
+    ]
+    VAL_CLASS_CODES = [x.split(" - ")[0] for x in VAL_CLASS_OPTIONS]
+    CRIT_OPTIONS = ["D", "E", "V"]
+
     # Inisialisasi Session State untuk Input Manual SPF
     if "spf_manual_list" not in st.session_state:
         st.session_state["spf_manual_list"] = []
@@ -599,7 +667,7 @@ elif selected_menu == MENU_LIST[3]:
         spf_approved_scm = s7.text_input("Approved By (Sr. Manager SCM)", placeholder="Nama / Kode Sr. Manager SCM")
 
     st.subheader("2. Sumber Data Material")
-    c_src1, c_src2, c_src3 = st.columns([2.4, 1.1, 1.1])
+    c_src1, c_src2, c_src3 = st.columns([2.1, 1.5, 1.0])
     src_spf = c_src1.radio(
         "Pilih Sumber Item:",
         [
@@ -609,7 +677,17 @@ elif selected_menu == MENU_LIST[3]:
         ],
         horizontal=True,
     )
-    def_mat_type = c_src2.text_input("Default Material Type", value="PM1270602")
+    if mg_options:
+        def_mat_sel = c_src2.selectbox(
+            f"Default Material Type ({len(mg_options):,} kode)",
+            [""] + mg_options,
+            index=0,
+            placeholder="Ketik kode / deskripsi...",
+        )
+        def_mat_type = def_mat_sel.split(" - ")[0].strip() if def_mat_sel else ""
+    else:
+        def_mat_type = c_src2.text_input("Default Material Type", value="", placeholder="Ketik kode Material Type")
+
     def_cert = c_src3.text_input("Default Certificate", value="COC/COO (2,1)")
 
     spf_base_rows = []
@@ -640,7 +718,7 @@ elif selected_menu == MENU_LIST[3]:
                     "Initial Order Qty": "2",
                     "Est. Unit Price (IDR)": "0",
                     "Material Type": def_mat_type.strip().upper(),
-                    "Val. Class": "PD1",
+                    "Val. Class": "4200",
                     "Certificate": def_cert.strip(),
                     "Lead Time": "6 WEEK",
                     "Material Code": str(r["code"]).strip(),
@@ -687,7 +765,7 @@ elif selected_menu == MENU_LIST[3]:
                     "Initial Order Qty": "2",
                     "Est. Unit Price (IDR)": "0",
                     "Material Type": def_mat_type.strip().upper(),
-                    "Val. Class": "PD1",
+                    "Val. Class": "4200",
                     "Certificate": def_cert.strip(),
                     "Lead Time": "6 WEEK",
                     "Material Code": str(r[s_code]).strip(),
@@ -720,17 +798,29 @@ elif selected_menu == MENU_LIST[3]:
                 placeholder="Misal:\nBall Valve\nSize: 2 inch\nBody: Stainless Steel 316\nRating: Class 150",
             )
 
-            p1, p2, p3, p4 = st.columns(4)
+            p1, p2, p3 = st.columns([0.8, 0.8, 1.6])
             man_uom = p1.selectbox("UoM", ["EA", "SET", "PC", "M", "L", "KG", "LOT"])
-            man_crit = p2.selectbox("Criticality", ["V", "V1", "E", "D"], index=3)
-            man_val = p3.selectbox("Val. Class", ["PD1", "PD0"], index=0)
-            man_lead = p4.text_input("Lead Time", value="6 WEEK")
+            man_crit = p2.selectbox("Criticality", CRIT_OPTIONS, index=0)
+            man_val_full = p3.selectbox("Val. Class", VAL_CLASS_OPTIONS, index=20)
+
+            if mg_options:
+                def_idx = next((i + 1 for i, opt in enumerate(mg_options) if opt.startswith(def_mat_type + " - ")), 0)
+                man_mat_sel = st.selectbox(
+                    "Material Type (Ketik kode atau nama grup untuk mencari)",
+                    [""] + mg_options,
+                    index=def_idx,
+                )
+                man_mat_type = man_mat_sel.split(" - ")[0].strip() if man_mat_sel else ""
+            else:
+                man_mat_type = st.text_input("Material Type", value=def_mat_type, placeholder="Ketik manual")
 
             q1, q2, q3, q4 = st.columns(4)
             man_qty_eq = q1.text_input("Qty Per Eqpt", value="1")
             man_qty_tot = q2.text_input("Qty Total", value="1")
             man_rop = q3.text_input("Reorder / Max", value="1 / 2")
-            man_price = q4.text_input("Est. Price (IDR)", value="0")
+            man_lead = q4.text_input("Lead Time", value="6 WEEK")
+
+            man_price = st.text_input("Est. Unit Price (IDR)", value="0")
 
             if st.button("➕ Tambahkan Item ke Daftar SPF", type="primary", use_container_width=True):
                 if not st.session_state["spf_in_short"].strip():
@@ -740,6 +830,8 @@ elif selected_menu == MENU_LIST[3]:
                     rop_val = rop_parts[0] if rop_parts else "1"
                     max_val = rop_parts[1] if len(rop_parts) > 1 else "2"
                     s_final = st.session_state["spf_in_short"].strip()
+                    val_code_only = man_val_full.split(" - ")[0].strip()
+                    mat_type_final = (man_mat_type.strip() or def_mat_type.strip()).upper()
 
                     st.session_state["spf_manual_list"].append({
                         "Plant": default_plant,
@@ -756,8 +848,8 @@ elif selected_menu == MENU_LIST[3]:
                         "Max Level": max_val,
                         "Initial Order Qty": max_val,
                         "Est. Unit Price (IDR)": man_price.strip(),
-                        "Material Type": def_mat_type.strip().upper(),
-                        "Val. Class": man_val,
+                        "Material Type": mat_type_final,
+                        "Val. Class": val_code_only,
                         "Certificate": def_cert.strip(),
                         "Lead Time": man_lead.strip(),
                         "Material Code": man_code.strip(),
@@ -834,7 +926,13 @@ elif selected_menu == MENU_LIST[3]:
         st.subheader(f"3. Tabel Draft SPF ({len(df_spf_init):,} Material)")
         st.caption(
             "Kolom LEN otomatis menghitung panjang Short Description (maks. 40 karakter SAP). "
-            "Edit parameter stok, harga (IDR), criticality (V/V1/E/D), dan deskripsi langsung di tabel:"
+            "Edit parameter stok, harga (IDR), criticality (D/E/V), Material Type, Val. Class, dan deskripsi langsung di tabel:"
+        )
+
+        mat_type_col_cfg = (
+            st.column_config.SelectboxColumn("Material Type", options=[""] + mg_codes)
+            if mg_codes
+            else st.column_config.TextColumn("Material Type")
         )
 
         edited_spf = st.data_editor(
@@ -848,12 +946,13 @@ elif selected_menu == MENU_LIST[3]:
                 "Short Description": st.column_config.TextColumn("Short Description (Max 40)", max_chars=40, width="medium"),
                 "Long Description": st.column_config.TextColumn("Long Description", width="large"),
                 "Criticality": st.column_config.SelectboxColumn(
-                    "Criticality (V/E/D)",
-                    options=["V", "V1", "E", "D"],
+                    "Criticality (D/E/V)",
+                    options=CRIT_OPTIONS,
                 ),
+                "Material Type": mat_type_col_cfg,
                 "Val. Class": st.column_config.SelectboxColumn(
                     "Val. Class",
-                    options=["PD1", "PD0"],
+                    options=VAL_CLASS_CODES,
                 ),
             },
         )
