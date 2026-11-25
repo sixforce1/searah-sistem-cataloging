@@ -822,43 +822,52 @@ elif selected_menu == MENU_LIST[3]:
 
             man_price = st.text_input("Est. Unit Price (IDR)", value="0")
 
-            if st.button("➕ Tambahkan Item ke Daftar SPF", type="primary", use_container_width=True):
-                if not st.session_state["spf_in_short"].strip():
-                    st.warning("Short Description wajib diisi terlebih dahulu.")
-                else:
-                    rop_parts = [x.strip() for x in man_rop.split("/")]
-                    rop_val = rop_parts[0] if rop_parts else "1"
-                    max_val = rop_parts[1] if len(rop_parts) > 1 else "2"
-                    s_final = st.session_state["spf_in_short"].strip()
-                    val_code_only = man_val_full.split(" - ")[0].strip()
-                    mat_type_final = (man_mat_type.strip() or def_mat_type.strip()).upper()
+            if st.button("➕ def tambah_item_spf_cb():
+                s_final = st.session_state["spf_in_short"].strip()
+                if not s_final:
+                    st.session_state["spf_form_err"] = "Short Description wajib diisi terlebih dahulu."
+                    return
+                st.session_state["spf_form_err"] = ""
+                rop_parts = [x.strip() for x in man_rop.split("/")]
+                rop_val = rop_parts[0] if rop_parts else "1"
+                max_val = rop_parts[1] if len(rop_parts) > 1 else "2"
+                val_code_only = man_val_full.split(" - ")[0].strip()
+                mat_type_final = (man_mat_type.strip() or def_mat_type.strip()).upper()
 
-                    st.session_state["spf_manual_list"].append({
-                        "Plant": default_plant,
-                        "LEN": len(s_final),
-                        "Short Description": s_final,
-                        "Long Description": st.session_state["spf_in_long"].strip(),
-                        "Criticality": man_crit,
-                        "Part / Category": man_part.strip(),
-                        "UoM": man_uom,
-                        "Qty Per Eqpt": man_qty_eq.strip(),
-                        "Qty Total": man_qty_tot.strip(),
-                        "Est. Annual Usage": "0",
-                        "Reorder Level": rop_val,
-                        "Max Level": max_val,
-                        "Initial Order Qty": max_val,
-                        "Est. Unit Price (IDR)": man_price.strip(),
-                        "Material Type": mat_type_final,
-                        "Val. Class": val_code_only,
-                        "Certificate": def_cert.strip(),
-                        "Lead Time": man_lead.strip(),
-                        "Material Code": man_code.strip(),
-                    })
-                    st.session_state["spf_in_short"] = ""
-                    st.session_state["spf_in_long"] = ""
-                    st.session_state["spf_ai_suggestion"] = None
-                    st.session_state["spf_last_checked"] = ("", "", "")
-                    st.rerun()
+                st.session_state["spf_manual_list"].append({
+                    "Plant": default_plant,
+                    "LEN": len(s_final),
+                    "Short Description": s_final,
+                    "Long Description": st.session_state["spf_in_long"].strip(),
+                    "Criticality": man_crit,
+                    "Part / Category": man_part.strip(),
+                    "UoM": man_uom,
+                    "Qty Per Eqpt": man_qty_eq.strip(),
+                    "Qty Total": man_qty_tot.strip(),
+                    "Est. Annual Usage": "0",
+                    "Reorder Level": rop_val,
+                    "Max Level": max_val,
+                    "Initial Order Qty": max_val,
+                    "Est. Unit Price (IDR)": man_price.strip(),
+                    "Material Type": mat_type_final,
+                    "Val. Class": val_code_only,
+                    "Certificate": def_cert.strip(),
+                    "Lead Time": man_lead.strip(),
+                    "Material Code": man_code.strip(),
+                })
+                st.session_state["spf_in_short"] = ""
+                st.session_state["spf_in_long"] = ""
+                st.session_state["spf_ai_suggestion"] = None
+                st.session_state["spf_last_checked"] = ("", "", "")
+
+            st.button(
+                "➕ Tambahkan Item ke Daftar SPF",
+                type="primary",
+                use_container_width=True,
+                on_click=tambah_item_spf_cb,
+            )
+            if st.session_state.get("spf_form_err"):
+                st.warning(st.session_state["spf_form_err"])
 
         # Auto-Trigger AI saat Short/Long Description berubah
         now_query = (
