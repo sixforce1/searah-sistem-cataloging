@@ -1035,10 +1035,207 @@ def build_template2_bytes(df: pd.DataFrame, sheet_name: str = "Extracted_Data") 
 
 
 # ----------------------------------------------------------------------------
-# 7. Stock Proposal Form (SPF)
+# 7. Stock Proposal Form (SPF) - Format Resmi SEARAH (SPF- NEW FORMAT)
 # ----------------------------------------------------------------------------
-def build_spf_bytes(df_spf: pd.DataFrame, meta: dict) -> bytes:
-    """Bangun file Excel Stock Proposal Form (SPF)."""
+SPF_ROW_MERGES = [
+    (4, 6),    # D:F Short Description
+    (7, 16),   # G:P Long Description
+    (17, 18),  # Q:R Criticality (V/E/D)
+    (19, 24),  # S:X Part/Item No. or Model/Type No.
+    (25, 26),  # Y:Z UOM
+    (27, 28),  # AA:AB Qty Installed Per Eqpt.
+    (29, 30),  # AC:AD Qty Installed Total
+    (31, 32),  # AE:AF Est. Annual Usage
+    (33, 35),  # AG:AI Reorder Level
+    (36, 38),  # AJ:AL Max Level
+    (39, 41),  # AM:AO Initial Order Qty.
+    (42, 44),  # AP:AR Est. Unit Price (IDR)
+    (45, 47),  # AS:AU Material Type
+    (48, 49),  # AV:AW Val. Class
+    (50, 51),  # AX:AY Certificate
+    (52, 53),  # AZ:BA Lead Time
+    (54, 57),  # BB:BE MESC No.
+    (58, 61),  # BF:BI Material No.
+    (62, 64),  # BJ:BL Date Catalogue Created
+]
+
+
+def make_short_40(short: str, long: str = "", limit: int = 40) -> str:
+    """Pastikan Short Description SPF maksimal 40 karakter SAP."""
+    s = clean_text(short).upper()
+    if not s and long:
+        s = clean_text(long).upper()
+    if len(s) <= limit:
+        return s
+    cut = s[:limit]
+    idx_sep = max(cut.rfind(","), cut.rfind(" "))
+    return (cut[:idx_sep] if idx_sep > 20 else cut).rstrip(" ,;-")
+
+
+def _to_num_or_str(val):
+    s = str(val or "").strip()
+    if not s:
+        return None
+    try:
+        if "." in s:
+            return float(s)
+        return int(s)
+    except ValueError:
+        return s
+
+
+def _copy_spf_row_style(ws, src_row: int, dst_row: int, max_col: int = 64):
+    from copy import copy
+    ws.row_dimensions[dst_row].height = ws.row_dimensions[src_row].height
+    for c in range(1, max_col + 1):
+        src_cell = ws.cell(src_row, c)
+        dst_cell = ws.cell(dst_row, c)
+        if src_cell.has_style:
+            dst_cell.font = copy(src_cell.font)
+            dst_cell.fill = copy(src_cell.fill)
+            dst_cell.border = copy(src_cell.border)
+            dst_cell.alignment = copy(src_cell.alignment)
+            dst_cell.number_format = src_cell.number_format
+    for c1, c2 in SPF_ROW_MERGES:
+        ws.merge_cells(start_row=dst_row, start_column=c1, end_row=dst_row, end_column=c2)
+
+
+def build_spf_bytes(
+    df_spf: pd.DataFrame,
+    meta: dict,
+    template_bytes: bytes | None = None,
+) -> bytes:
+    """Bangun file Excel Stock Proposal Form (SPF) mengikuti format resmi SEARAH (SPF- NEW FORMAT)."""
+    if template_bytes:
+        wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+        ws = wb["SPF- NEW FORMAT"] if "SPF- NEW FORMAT" in wb.sheetnames else wb.active
+
+        # Bersihkan nilai contoh pada header template
+        for coord in [
+            "BF1", "AC5", "BC5", "H8", "X8", "AS8", "BH8",
+            "H9", "X9", "AS9", "BH9", "H10", "X10", "AS10", "BH10",
+            "H11", "X11", "AS11", "BH11", "K12", "AS12", "BH12",
+        ]:
+            ws[coord].value = None
+
+        # Isi metadata header form SPF
+        header_map = {
+            "BF1": meta.get("spf_ref", ""),
+            "H5": meta.get("originating_dept", ""),
+            "AC5": meta.get("originator_ref", ""),
+            "BC5": meta.get("required_date", ""),
+            "H8": meta.get("equipment", ""),
+            "X8": meta.get("size_capacity", ""),
+            "AS8": meta.get("equipment_tag", ""),
+            "BH8": meta.get("bom_no", ""),
+            "H9": meta.get("model_type", ""),
+            "X9": meta.get("manufacturer", ""),
+            "AS9": meta.get("serial_no", ""),
+            "BH9": meta.get("asset_no", ""),
+            "H10": meta.get("sub_model", ""),
+            "X10": meta.get("country_origin", ""),
+            "AS10": meta.get("epc_contractor", ""),
+            "BH10": meta.get("spir_no", ""),
+            "H11": meta.get("applicable_std", ""),
+            "X11": meta.get("mfr_drg", ""),
+            "AS11": meta.get("project_drg", ""),
+            "K12": meta.get("reason", ""),
+            "AS12": meta.get("units_installed", ""),
+            "BH12": meta.get("units_in_use", ""),
+        }
+        for coord, val in header_map.items():
+            if val is not None and str(val).strip() != "":
+                ws[coord].value = str(val).strip()
+
+        eq_crit = str(meta.get("eqpmt_criticality", "")).strip()
+        if eq_crit:
+            ws["BH11"].value = _to_num_or_str(eq_crit)
+
+        # Bersihkan baris item existing (18..61)
+        clear_cols = [1, 2, 3, 4, 7, 17, 19, 25, 27, 29, 31, 33, 36, 39, 42, 45, 48, 50, 52, 54, 58, 62]
+        for r in range(18, 62):
+            for c in clear_cols:
+                ws.cell(r, c).value = None
+
+        n_items = len(df_spf)
+        base_capacity = 44  # Baris 18..61
+
+        # Jika item > 44 baris, sisipkan baris ekstra sebelum baris 62 & geser blok tanda tangan
+        if n_items > base_capacity:
+            extra = n_items - base_capacity
+            footer_merges = [
+                rng for rng in list(ws.merged_cells.ranges)
+                if rng.min_row >= 62
+            ]
+            for rng in footer_merges:
+                ws.unmerge_cells(str(rng))
+
+            ws.insert_rows(62, amount=extra)
+
+            for rng in footer_merges:
+                ws.merge_cells(
+                    start_row=rng.min_row + extra,
+                    start_column=rng.min_col,
+                    end_row=rng.max_row + extra,
+                    end_column=rng.max_col,
+                )
+
+            for r in range(62, 62 + extra):
+                _copy_spf_row_style(ws, src_row=18, dst_row=r)
+
+        # Isi data per baris mulai row 18
+        for idx, (_, row) in enumerate(df_spf.iterrows()):
+            r = 18 + idx
+            short_val = make_short_40(
+                row.get("Short Description", ""),
+                row.get("Long Description", ""),
+                limit=40,
+            )
+            long_val = str(row.get("Long Description", "")).strip()
+
+            ws.cell(r, 1).value = idx + 1
+            ws.cell(r, 2).value = str(row.get("Plant", meta.get("default_plant", "ID05"))).strip().upper()
+            ws.cell(r, 3).value = f"=LEN(D{r})"
+            ws.cell(r, 4).value = short_val
+            ws.cell(r, 7).value = long_val
+            ws.cell(r, 17).value = str(row.get("Criticality", "D")).strip().upper()
+            ws.cell(r, 19).value = str(row.get("Part / Category", "")).strip()
+            ws.cell(r, 25).value = str(row.get("UoM", "EA")).strip().upper()
+            ws.cell(r, 27).value = _to_num_or_str(row.get("Qty Per Eqpt", ""))
+            ws.cell(r, 29).value = _to_num_or_str(row.get("Qty Total", ""))
+            ws.cell(r, 31).value = _to_num_or_str(row.get("Est. Annual Usage", "0"))
+            ws.cell(r, 33).value = _to_num_or_str(row.get("Reorder Level", ""))
+            ws.cell(r, 36).value = _to_num_or_str(row.get("Max Level", ""))
+            ws.cell(r, 39).value = _to_num_or_str(row.get("Initial Order Qty", ""))
+            ws.cell(r, 42).value = _to_num_or_str(row.get("Est. Unit Price (IDR)", ""))
+            ws.cell(r, 45).value = str(row.get("Material Type", "")).strip().upper()
+            ws.cell(r, 48).value = str(row.get("Val. Class", "")).strip().upper()
+            ws.cell(r, 50).value = str(row.get("Certificate", "")).strip()
+            ws.cell(r, 52).value = str(row.get("Lead Time", "")).strip().upper()
+
+            if str(row.get("MESC No.", "")).strip():
+                ws.cell(r, 54).value = str(row.get("MESC No.", "")).strip()
+            if str(row.get("Material Code", "")).strip() and meta.get("fill_mat_code", False):
+                ws.cell(r, 58).value = str(row.get("Material Code", "")).strip()
+
+            est_lines = max(2, (len(long_val) // 75) + 1)
+            ws.row_dimensions[r].height = max(28.0, min(160.0, est_lines * 16.5))
+
+        # Isi blok tanda tangan di footer
+        offset = max(0, n_items - base_capacity)
+        ws.cell(64 + offset, 1).value = str(meta.get("initiated_by", "")).strip().upper() or None
+        ws.cell(65 + offset, 1).value = (
+            f"DATE:  {str(meta['initiated_date']).strip().upper()}"
+            if meta.get("initiated_date") else "DATE:"
+        )
+        ws.cell(64 + offset, 7).value = str(meta.get("endorsed_mgr", "")).strip().upper() or None
+        ws.cell(64 + offset, 14).value = str(meta.get("endorsed_srmgr", "")).strip().upper() or None
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # Fallback jika template resmi tidak tersedia
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Stock_Proposal_Form"
@@ -1050,22 +1247,18 @@ def build_spf_bytes(df_spf: pd.DataFrame, meta: dict) -> bytes:
 
     ws["A1"] = "STOCK PROPOSAL FORM (SPF) - SEARAH"
     ws["A1"].font = title_font
-
-    ws["A2"] = "Requestor / Dept:"
+    ws["A2"] = "Originating Dept:"
     ws["A2"].font = meta_font
-    ws["B2"] = meta.get("requestor", "")
-
-    ws["E2"] = "Plant / Storage Loc:"
+    ws["B2"] = meta.get("originating_dept", "")
+    ws["E2"] = "Applicable Standard:"
     ws["E2"].font = meta_font
-    ws["F2"] = meta.get("plant", "")
-
-    ws["A3"] = "Field / Project:"
+    ws["F2"] = meta.get("applicable_std", "")
+    ws["A3"] = "Equipment / Model:"
     ws["A3"].font = meta_font
-    ws["B3"] = meta.get("field", "")
-
-    ws["E3"] = "Date:"
+    ws["B3"] = f"{meta.get('equipment', '')} - {meta.get('model_type', '')}".strip(" -")
+    ws["E3"] = "Required Date:"
     ws["E3"].font = meta_font
-    ws["F3"] = meta.get("date", "")
+    ws["F3"] = meta.get("required_date", "")
 
     start_row = 5
     cols = list(df_spf.columns)
