@@ -822,7 +822,7 @@ elif selected_menu == MENU_LIST[3]:
 
             man_price = st.text_input("Est. Unit Price (IDR)", value="0")
 
-            if st.button("➕ def tambah_item_spf_cb():
+           def tambah_item_spf_cb():
                 s_final = st.session_state["spf_in_short"].strip()
                 if not s_final:
                     st.session_state["spf_form_err"] = "Short Description wajib diisi terlebih dahulu."
