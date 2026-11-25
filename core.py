@@ -1276,3 +1276,63 @@ def build_spf_bytes(
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+
+
+class SPFItemRecommendation(BaseModel):
+  recommended_short_text: str = Field(
+      description=(
+          "Short text standar e-Cat/SAP, HURUF KAPITAL, maks 40 karakter,"
+          " format NOUN,MODIFIER,SPEC."
+      )
+  )
+  recommended_long_text: str = Field(
+      description=(
+          "Long text terstruktur baris demi baris (NOUN, MODIFIER, ATTRIBUTES,"
+          " PART NO, MANUFACTURER), HURUF KAPITAL."
+      )
+  )
+  keterangan_ai: str = Field(
+      description=(
+          "Penjelasan singkat bagian yang diperbaiki/disingkat dan catatan"
+          " jika ada spesifikasi teknis yang kurang."
+      )
+  )
+
+
+def recommend_spf_item(
+    api_key: str,
+    model: str,
+    short_in: str,
+    long_in: str,
+    part_no: str = "",
+    eq_info: str = "",
+) -> SPFItemRecommendation:
+  client = genai.Client(api_key=api_key)
+  prompt = f"""
+    Anda adalah Senior Material Cataloger Migas (standar SAP Material Master & SKK Migas e-Cataloging).
+    Tinjau dan rekomendasikan perbaikan Short Description dan Long Description untuk item Stock Proposal Form (SPF) berikut:
+
+    - Konteks Equipment/Manufacturer: {eq_info}
+    - Part/Category/Model No: {part_no}
+    - Input Short Description: "{short_in}"
+    - Input Long Description: "{long_in}"
+
+    Aturan Wajib:
+    1. Short Description MAKSIMAL 40 karakter, HURUF KAPITAL, format NOUN,MODIFIER,SPEC, tanpa spasi setelah koma, gunakan singkatan standar (IN, SS316, CL150, RF, NPT, ASSY, dll).
+    2. Long Description HURUF KAPITAL, rapi per baris atribut (NOUN, MODIFIER, SIZE/RATING, MATERIAL, PART NO, MANUFACTURER).
+    3. Berikan keterangan jelas apa yang diperbaiki dan peringatan jika ada spek penting yang belum tercantum.
+    """
+  response = client.models.generate_content(
+      model=model,
+      contents=prompt,
+      config=types.GenerateContentConfig(
+          response_mime_type="application/json",
+          response_schema=SPFItemRecommendation,
+          temperature=0.2,
+      ),
+  )
+  return response.parsed
