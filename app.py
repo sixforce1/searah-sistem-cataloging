@@ -515,232 +515,980 @@ elif selected_menu == MENU_LIST[2]:
 # 3. MENU GENERATE SPF (STOCK PROPOSAL FORM)
 # ==================================================================
 elif selected_menu == MENU_LIST[3]:
-    st.title("3️⃣ Generate SPF (Stock Proposal Form)")
-    st.caption(
-        "Susun dokumen Stock Proposal Form sesuai format resmi SEARAH (SPF- NEW FORMAT) "
-        "dengan perhitungan panjang Short Text 40 karakter SAP otomatis."
+  st.title("3️⃣ Generate SPF (Stock Proposal Form)")
+  st.caption(
+      "Susun dokumen Stock Proposal Form sesuai format resmi SEARAH (SPF- NEW"
+      " FORMAT) dengan perhitungan panjang Short Text 40 karakter SAP otomatis."
+  )
+
+  # Inisialisasi Session State untuk Input Manual SPF
+  if "spf_manual_list" not in st.session_state:
+    st.session_state["spf_manual_list"] = []
+  if "spf_in_short" not in st.session_state:
+    st.session_state["spf_in_short"] = ""
+  if "spf_in_long" not in st.session_state:
+    st.session_state["spf_in_long"] = ""
+  if "spf_ai_suggestion" not in st.session_state:
+    st.session_state["spf_ai_suggestion"] = None
+  if "spf_last_checked" not in st.session_state:
+    st.session_state["spf_last_checked"] = ("", "", "")
+
+  local_spf_tpl = find_local(
+      lambda fn: ("spf_template" in fn or ("spf" in fn and fn.endswith(".xlsx")))
+  )
+  tpl_bytes = open(local_spf_tpl, "rb").read() if local_spf_tpl else None
+
+  with st.expander(
+      "Template Excel SPF Resmi (SPF- NEW FORMAT)", expanded=(tpl_bytes is None)
+  ):
+    if tpl_bytes is not None:
+      st.success(
+          "Template resmi aktif dari folder aplikasi:"
+          f" `{os.path.basename(local_spf_tpl)}`"
+      )
+    up_tpl = st.file_uploader(
+        "Upload / Ganti Template SPF (.xlsx, misal: SPF Insulation Gasket"
+        " 2026_Rev.1 31 Aug 2026.xlsx)",
+        type=["xlsx"],
+        key="up_spf_tpl",
     )
+    if up_tpl is not None:
+      tpl_bytes = up_tpl.getvalue()
+      st.info(f"Menggunakan template unggahan: `{up_tpl.name}`")
 
-    local_spf_tpl = find_local(
-        lambda fn: ("spf_template" in fn or ("spf" in fn and fn.endswith(".xlsx")))
-    )
-    tpl_bytes = open(local_spf_tpl, "rb").read() if local_spf_tpl else None
-
-    with st.expander("Template Excel SPF Resmi (SPF- NEW FORMAT)", expanded=(tpl_bytes is None)):
-        if tpl_bytes is not None:
-            st.success(f"Template resmi aktif dari folder aplikasi: `{os.path.basename(local_spf_tpl)}`")
-        up_tpl = st.file_uploader(
-            "Upload / Ganti Template SPF (.xlsx, misal: SPF Insulation Gasket 2026_Rev.1 31 Aug 2026.xlsx)",
-            type=["xlsx"],
-            key="up_spf_tpl",
-        )
-        if up_tpl is not None:
-            tpl_bytes = up_tpl.getvalue()
-            st.info(f"Menggunakan template unggahan: `{up_tpl.name}`")
-
-    with st.expander("1. Informasi Header & Approval SPF (SPF- NEW FORMAT)", expanded=True):
-        r1c1, r1c2, r1c3, r1c4 = st.columns([2, 1.5, 1.5, 1.5])
-        spf_dept = r1c1.selectbox(
-            "Originating Dept / Section",
-            [
-                "ID05 PCK2L OPERATION",
-                "ID 05 PCK2L DRILLING",
-                "ID01 PCML OPERATION",
-                "ID 01 PCML DRILLING",
-                "ID08 PCNM2L DRILLING",
-            ],
-        )
-        default_plant = spf_dept.split()[0] if spf_dept.startswith("ID") and len(spf_dept.split()[0]) == 4 else "ID05"
-        spf_req_date = r1c2.text_input("Stock Required Date", value=pd.Timestamp.now().strftime("%d/%m/%Y"))
-        spf_orig_ref = r1c3.text_input("Originator Ref. No.", value="")
-        spf_ref_no = r1c4.text_input("SPF Ref. No.", value="")
-
-        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-        spf_eqpt = r2c1.text_input("Equipment", value="Consumable Materials")
-        spf_model = r2c2.text_input("Model or Type", placeholder="Misal: Insulation Gasket Set")
-        spf_submodel = r2c3.text_input("Sub-Model", placeholder="Misal: Very Critical Service")
-        spf_std = r2c4.text_input("Applicable Standard", value="Searah Ketapang II Ltd")
-
-        r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-        spf_size = r3c1.text_input("Size / Capacity", value="Various")
-        spf_mfr = r3c2.text_input("Manufacturer", value="Various")
-        spf_tag = r3c3.text_input("Equipment Tag No.", value="Various")
-        spf_asset = r3c4.text_input("Asset No.", value="Various P2B")
-
-        r4c1, r4c2 = st.columns([3, 1])
-        spf_reason = r4c1.text_input(
-            "Reasons for Proposal",
-            placeholder="Misal: PROVISION INSULATION GASKET FOR SEARAH KETAPANG II LTD.",
-        )
-        spf_eq_crit = r4c2.selectbox("Eqpmt Criticality (1/2/3)", ["1", "2", "3"], index=0)
-
-        st.markdown("**Blok Persetujuan (Footer SPF)**")
-        s1, s2, s3, s4 = st.columns(4)
-        spf_init_by = s1.text_input("Initiated By (Engineer/Supv)", placeholder="Misal: TEGUH CAHYO / SLAMET SUBAGIO")
-        spf_end_mgr = s2.text_input("Endorsed By (Manager)", placeholder="Misal: BENTLY NURPATRIAWIRA")
-        spf_end_srmgr = s3.text_input("Endorsed By (Senior Manager)", placeholder="Misal: AULIA ARIF HIDAYAT")
-        spf_init_date = s4.text_input("Tanggal Tanda Tangan", value=pd.Timestamp.now().strftime("%d %b %Y").upper())
-
-    st.subheader("2. Sumber Data Material")
-    c_src1, c_src2, c_src3 = st.columns([2, 1.2, 1.3])
-    src_spf = c_src1.radio(
-        "Pilih Sumber Item:",
+  with st.expander(
+      "1. Informasi Header & Approval SPF (SPF- NEW FORMAT)", expanded=True
+  ):
+    r1c1, r1c2, r1c3, r1c4 = st.columns([2, 1.5, 1.5, 1.5])
+    spf_dept = r1c1.selectbox(
+        "Originating Dept / Section",
         [
-            "Gunakan hasil katalogisasi sesi ini (Menu 1)",
-            "Upload file Excel daftar material / Template 1 (.xlsx)",
+            "ID05 PCK2L OPERATION",
+            "ID 05 PCK2L DRILLING",
+            "ID01 PCML OPERATION",
+            "ID 01 PCML DRILLING",
+            "ID08 PCNM2L DRILLING",
         ],
-        horizontal=True,
     )
-    def_mat_type = c_src2.text_input("Default Material Type", value="PM1270602")
-    def_cert = c_src3.text_input("Default Certificate", value="COC/COO (2,1)")
+    default_plant = (
+        spf_dept.split()[0]
+        if spf_dept.startswith("ID") and len(spf_dept.split()[0]) == 4
+        else "ID05"
+    )
+    spf_req_date = r1c2.text_input(
+        "Stock Required Date", value=pd.Timestamp.now().strftime("%d/%m/%Y")
+    )
+    spf_orig_ref = r1c3.text_input("Originator Ref. No.", value="")
+    spf_ref_no = r1c4.text_input("SPF Ref. No.", value="")
 
-    spf_base_rows = []
-    if src_spf.startswith("Gunakan"):
-        if "current_t1" not in st.session_state:
-            st.info("Belum ada data dari Menu 1. Silakan proses di Menu 1 dahulu atau pilih opsi Upload Excel.")
-        else:
-            t1_df = to_template1(st.session_state["current_t1"])
-            for i, r in t1_df.iterrows():
-                short_40 = core.make_short_40(str(r["short"]), str(r["long"]), limit=40)
-                nm_label = f"{str(r['noun']).strip()} | {str(r['modifier']).strip()}".strip(" |")
-                spf_base_rows.append({
-                    "No.": i + 1,
-                    "Plant": default_plant,
-                    "LEN": len(short_40),
-                    "Short Description": short_40,
-                    "Long Description": str(r["long"]).strip(),
-                    "Criticality": "D",
-                    "Part / Category": nm_label,
-                    "UoM": str(r["uom"]).strip().upper() or "EA",
-                    "Qty Per Eqpt": "1",
-                    "Qty Total": "1",
-                    "Est. Annual Usage": "0",
-                    "Reorder Level": "1",
-                    "Max Level": "2",
-                    "Initial Order Qty": "2",
-                    "Est. Unit Price (IDR)": "0",
-                    "Material Type": def_mat_type.strip().upper(),
-                    "Val. Class": "PD1",
-                    "Certificate": def_cert.strip(),
-                    "Lead Time": "6 WEEK",
-                    "Material Code": str(r["code"]).strip(),
-                })
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    spf_eqpt = r2c1.text_input("Equipment", value="Consumable Materials")
+    spf_model = r2c2.text_input(
+        "Model or Type", placeholder="Misal: Insulation Gasket Set"
+    )
+    spf_submodel = r2c3.text_input(
+        "Sub-Model", placeholder="Misal: Very Critical Service"
+    )
+    spf_std = r2c4.text_input(
+        "Applicable Standard", value="Searah Ketapang II Ltd"
+    )
+
+    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+    spf_size = r3c1.text_input("Size / Capacity", value="Various")
+    spf_mfr = r3c2.text_input("Manufacturer", value="Various")
+    spf_tag = r3c3.text_input("Equipment Tag No.", value="Various")
+    spf_asset = r3c4.text_input("Asset No.", value="Various P2B")
+
+    r4c1, r4c2 = st.columns([3, 1])
+    spf_reason = r4c1.text_input(
+        "Reasons for Proposal",
+        placeholder=(
+            "Misal: PROVISION INSULATION GASKET FOR SEARAH KETAPANG II LTD."
+        ),
+    )
+    spf_eq_crit = r4c2.selectbox(
+        "Eqpmt Criticality (1/2/3)", ["1", "2", "3"], index=0
+    )
+
+    st.markdown("**Blok Persetujuan (Footer SPF)**")
+    s1, s2, s3, s4 = st.columns(4)
+    spf_init_by = s1.text_input(
+        "Initiated By (Engineer/Supv)",
+        placeholder="Misal: TEGUH CAHYO / SLAMET SUBAGIO",
+    )
+    spf_end_mgr = s2.text_input(
+        "Endorsed By (Manager)", placeholder="Misal: BENTLY NURPATRIAWIRA"
+    )
+    spf_end_srmgr = s3.text_input(
+        "Endorsed By (Senior Manager)", placeholder="Misal: AULIA ARIF HIDAYAT"
+    )
+    spf_init_date = s4.text_input(
+        "Tanggal Tanda Tangan",
+        value=pd.Timestamp.now().strftime("%d %b %Y").upper(),
+    )
+
+  st.subheader("2. Sumber Data Material")
+  c_src1, c_src2, c_src3 = st.columns([2.4, 1.1, 1.1])
+  src_spf = c_src1.radio(
+      "Pilih Sumber Item:",
+      [
+          "Gunakan hasil katalogisasi sesi ini (Menu 1)",
+          "Upload file Excel daftar material / Template 1 (.xlsx)",
+          "✍️ Input Manual (Auto-Rekomendasi AI)",
+      ],
+      horizontal=True,
+  )
+  def_mat_type = c_src2.text_input("Default Material Type", value="PM1270602")
+  def_cert = c_src3.text_input("Default Certificate", value="COC/COO (2,1)")
+
+  spf_base_rows = []
+
+  # --- OPSI 1: DARI MENU 1 ---
+  if src_spf.startswith("Gunakan"):
+    if "current_t1" not in st.session_state:
+      st.info(
+          "Belum ada data dari Menu 1. Silakan proses di Menu 1 dahulu atau"
+          " pilih opsi Upload Excel / Input Manual."
+      )
     else:
-        up_spf = st.file_uploader("Upload Excel Daftar Material / Template 1 (.xlsx)", type=["xlsx"], key="up_spf_file")
-        if up_spf is not None:
-            df_s_in = pd.read_excel(io.BytesIO(up_spf.getvalue()), dtype=str).fillna("")
-            cols_s = list(df_s_in.columns)
+      t1_df = to_template1(st.session_state["current_t1"])
+      for i, r in t1_df.iterrows():
+        short_40 = core.make_short_40(str(r["short"]), str(r["long"]), limit=40)
+        nm_label = (
+            f"{str(r['noun']).strip()} | {str(r['modifier']).strip()}".strip(
+                " |"
+            )
+        )
+        spf_base_rows.append({
+            "No.": i + 1,
+            "Plant": default_plant,
+            "LEN": len(short_40),
+            "Short Description": short_40,
+            "Long Description": str(r["long"]).strip(),
+            "Criticality": "D",
+            "Part / Category": nm_label,
+            "UoM": str(r["uom"]).strip().upper() or "EA",
+            "Qty Per Eqpt": "1",
+            "Qty Total": "1",
+            "Est. Annual Usage": "0",
+            "Reorder Level": "1",
+            "Max Level": "2",
+            "Initial Order Qty": "2",
+            "Est. Unit Price (IDR)": "0",
+            "Material Type": def_mat_type.strip().upper(),
+            "Val. Class": "PD1",
+            "Certificate": def_cert.strip(),
+            "Lead Time": "6 WEEK",
+            "Material Code": str(r["code"]).strip(),
+        })
 
-            def idx_s(cands):
-                for c in cols_s:
-                    if any(k in c.lower() for k in cands):
-                        return cols_s.index(c)
-                return 0
+  # --- OPSI 2: UPLOAD EXCEL ---
+  elif src_spf.startswith("Upload"):
+    up_spf = st.file_uploader(
+        "Upload Excel Daftar Material / Template 1 (.xlsx)",
+        type=["xlsx"],
+        key="up_spf_file",
+    )
+    if up_spf is not None:
+      df_s_in = pd.read_excel(io.BytesIO(up_spf.getvalue()), dtype=str).fillna(
+          ""
+      )
+      cols_s = list(df_s_in.columns)
 
-            sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-            s_code = sc1.selectbox("Kode Material (opsional)", cols_s, index=idx_s(["material code", "code", "material"]))
-            s_short = sc2.selectbox("Short Description", cols_s, index=idx_s(["short", "description"]))
-            s_long = sc3.selectbox("Long Description", cols_s, index=idx_s(["long", "po text"]))
-            s_uom = sc4.selectbox("UoM", cols_s, index=idx_s(["uom", "unit"]))
-            s_cat = sc5.selectbox("Part / Category / Noun", cols_s, index=idx_s(["noun", "part", "category"]))
+      def idx_s(cands):
+        for c in cols_s:
+          if any(k in c.lower() for k in cands):
+            return cols_s.index(c)
+        return 0
 
-            for i, r in df_s_in.iterrows():
-                raw_s = str(r[s_short]).strip()
-                raw_l = str(r[s_long]).strip()
-                short_40 = core.make_short_40(raw_s, raw_l, limit=40)
-                spf_base_rows.append({
-                    "No.": i + 1,
-                    "Plant": default_plant,
-                    "LEN": len(short_40),
-                    "Short Description": short_40,
-                    "Long Description": raw_l or raw_s,
-                    "Criticality": "D",
-                    "Part / Category": str(r[s_cat]).strip(),
-                    "UoM": str(r[s_uom]).strip().upper() or "EA",
-                    "Qty Per Eqpt": "1",
-                    "Qty Total": "1",
-                    "Est. Annual Usage": "0",
-                    "Reorder Level": "1",
-                    "Max Level": "2",
-                    "Initial Order Qty": "2",
-                    "Est. Unit Price (IDR)": "0",
-                    "Material Type": def_mat_type.strip().upper(),
-                    "Val. Class": "PD1",
-                    "Certificate": def_cert.strip(),
-                    "Lead Time": "6 WEEK",
-                    "Material Code": str(r[s_code]).strip(),
-                })
+      sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+      s_code = sc1.selectbox(
+          "Kode Material (opsional)",
+          cols_s,
+          index=idx_s(["material code", "code", "material"]),
+      )
+      s_short = sc2.selectbox(
+          "Short Description", cols_s, index=idx_s(["short", "description"])
+      )
+      s_long = sc3.selectbox(
+          "Long Description", cols_s, index=idx_s(["long", "po text"])
+      )
+      s_uom = sc4.selectbox("UoM", cols_s, index=idx_s(["uom", "unit"]))
+      s_cat = sc5.selectbox(
+          "Part / Category / Noun",
+          cols_s,
+          index=idx_s(["noun", "part", "category"]),
+      )
 
-    if spf_base_rows:
-        df_spf_init = pd.DataFrame(spf_base_rows)
-        st.subheader(f"3. Tabel Draft SPF ({len(df_spf_init):,} Material)")
-        st.caption(
-            "Kolom LEN otomatis menghitung panjang Short Description (maks. 40 karakter SAP). "
-            "Edit parameter stok, harga (IDR), criticality (V/V1/E/D), dan deskripsi langsung di tabel:"
+      for i, r in df_s_in.iterrows():
+        raw_s = str(r[s_short]).strip()
+        raw_l = str(r[s_long]).strip()
+        short_40 = core.make_short_40(raw_s, raw_l, limit=40)
+        spf_base_rows.append({
+            "No.": i + 1,
+            "Plant": default_plant,
+            "LEN": len(short_40),
+            "Short Description": short_40,
+            "Long Description": raw_l or raw_s,
+            "Criticality": "D",
+            "Part / Category": str(r[s_cat]).strip(),
+            "UoM": str(r[s_uom]).strip().upper() or "EA",
+            "Qty Per Eqpt": "1",
+            "Qty Total": "1",
+            "Est. Annual Usage": "0",
+            "Reorder Level": "1",
+            "Max Level": "2",
+            "Initial Order Qty": "2",
+            "Est. Unit Price (IDR)": "0",
+            "Material Type": def_mat_type.strip().upper(),
+            "Val. Class": "PD1",
+            "Certificate": def_cert.strip(),
+            "Lead Time": "6 WEEK",
+            "Material Code": str(r[s_code]).strip(),
+        })
+
+  # --- OPSI 3: INPUT MANUAL + REKOMENDASI AI OTOMATIS ---
+  else:
+    st.markdown("---")
+    col_in, col_ai = st.columns([1.15, 0.85], gap="large")
+
+    with col_in:
+      st.markdown("#### ✍️ Form Input Item SPF")
+      m1, m2 = st.columns(2)
+      man_part = m1.text_input(
+          "Part / Category / Model No.", placeholder="Misal: 1R81224YT12"
+      )
+      man_code = m2.text_input(
+          "Kode Material SAP (Opsional)", placeholder="Kosongkan jika baru"
+      )
+
+      cur_len = len(st.session_state["spf_in_short"])
+      st.text_input(
+          f"Short Description ({cur_len}/40 karakter) — tekan Enter untuk"
+          " rekomendasi AI",
+          key="spf_in_short",
+          placeholder="Misal: Valve Ball 2 inch SS316 Class 150",
+      )
+      if cur_len > 40:
+        st.error(
+            f"⚠️ Kelebihan {cur_len - 40} karakter! Batas SAP maksimal 40"
+            " karakter."
         )
 
-        edited_spf = st.data_editor(
-            df_spf_init,
-            key="editor_spf_table",
+      st.text_area(
+          "Long Description — klik di luar kotak / Ctrl+Enter untuk rekomendasi"
+          " AI",
+          key="spf_in_long",
+          height=130,
+          placeholder=(
+              "Misal:\nBall Valve\nSize: 2 inch\nBody: Stainless Steel"
+              " 316\nRating: Class 150"
+          ),
+      )
+
+      p1, p2, p3, p4 = st.columns(4)
+      man_uom = p1.selectbox("UoM", ["EA", "SET", "PC", "M", "L", "KG", "LOT"])
+      man_crit = p2.selectbox("Criticality", ["V", "V1", "E", "D"], index=3)
+      man_val = p3.selectbox("Val. Class", ["PD1", "PD0"], index=0)
+      man_lead = p4.text_input("Lead Time", value="6 WEEK")
+
+      q1, q2, q3, q4 = st.columns(4)
+      man_qty_eq = q1.text_input("Qty Per Eqpt", value="1")
+      man_qty_tot = q2.text_input("Qty Total", value="1")
+      man_rop = q3.text_input("Reorder / Max", value="1 / 2")
+      man_price = q4.text_input("Est. Price (IDR)", value="0")
+
+      if st.button(
+          "➕ Tambahkan Item ke Daftar SPF",
+          type="primary",
+          use_container_width=True,
+      ):
+        if not st.session_state["spf_in_short"].strip():
+          st.warning("Short Description wajib diisi terlebih dahulu.")
+        else:
+          rop_parts = [x.strip() for x in man_rop.split("/")]
+          rop_val = rop_parts[0] if rop_parts else "1"
+          max_val = rop_parts[1] if len(rop_parts) > 1 else "2"
+          s_final = st.session_state["spf_in_short"].strip()
+
+          st.session_state["spf_manual_list"].append({
+              "Plant": default_plant,
+              "LEN": len(s_final),
+              "Short Description": s_final,
+              "Long Description": st.session_state["spf_in_long"].strip(),
+              "Criticality": man_crit,
+              "Part / Category": man_part.strip(),
+              "UoM": man_uom,
+              "Qty Per Eqpt": man_qty_eq.strip(),
+              "Qty Total": man_qty_tot.strip(),
+              "Est. Annual Usage": "0",
+              "Reorder Level": rop_val,
+              "Max Level": max_val,
+              "Initial Order Qty": max_val,
+              "Est. Unit Price (IDR)": man_price.strip(),
+              "Material Type": def_mat_type.strip().upper(),
+              "Val. Class": man_val,
+              "Certificate": def_cert.strip(),
+              "Lead Time": man_lead.strip(),
+              "Material Code": man_code.strip(),
+          })
+          # Bersihkan form untuk item berikutnya
+          st.session_state["spf_in_short"] = ""
+          st.session_state["spf_in_long"] = ""
+          st.session_state["spf_ai_suggestion"] = None
+          st.session_state["spf_last_checked"] = ("", "", "")
+          st.rerun()
+
+    # Auto-Trigger AI saat Short/Long Description berubah
+    now_query = (
+        st.session_state["spf_in_short"].strip(),
+        st.session_state["spf_in_long"].strip(),
+        man_part.strip(),
+    )
+    if (
+        use_ai
+        and api_key
+        and (now_query[0] or now_query[1])
+        and now_query != st.session_state["spf_last_checked"]
+    ):
+      with col_ai:
+        with st.spinner("🤖 AI menyusun rekomendasi Short & Long Text..."):
+          try:
+            eq_ctx = f"{spf_eqpt} | {spf_model} | Mfr: {spf_mfr}"
+            rec_obj = core.recommend_spf_item(
+                api_key=api_key,
+                model=model,
+                short_in=now_query[0],
+                long_in=now_query[1],
+                part_no=now_query[2],
+                eq_info=eq_ctx,
+            )
+            st.session_state["spf_ai_suggestion"] = rec_obj
+            st.session_state["spf_last_checked"] = now_query
+          except Exception as err:
+            st.error(f"Gagal memanggil Gemini: {err}")
+
+    with col_ai:
+      st.markdown("#### ✨ Rekomendasi AI (Standar e-Cat / SAP)")
+      rec = st.session_state["spf_ai_suggestion"]
+      if rec:
+        st.info(f"💡 **Keterangan AI:**\n\n{rec.keterangan_ai}")
+
+        rec_len = len(rec.recommended_short_text)
+        st.markdown(
+            f"**Saran Short Description** (`{rec_len}/40 karakter`):"
+        )
+        st.code(rec.recommended_short_text, language=None)
+
+        st.markdown("**Saran Long Description:**")
+        st.code(rec.recommended_long_text, language=None)
+
+        def terapkan_saran_spf():
+          st.session_state["spf_in_short"] = rec.recommended_short_text
+          st.session_state["spf_in_long"] = rec.recommended_long_text
+          st.session_state["spf_last_checked"] = (
+              rec.recommended_short_text.strip(),
+              rec.recommended_long_text.strip(),
+              man_part.strip(),
+          )
+
+        st.button(
+            "✅ Terapkan Rekomendasi ke Form",
+            on_click=terapkan_saran_spf,
             use_container_width=True,
-            hide_index=True,
-            height=480,
-            disabled=["No.", "LEN"],
-            column_config={
-                "Short Description": st.column_config.TextColumn("Short Description (Max 40)", max_chars=40, width="medium"),
-                "Long Description": st.column_config.TextColumn("Long Description", width="large"),
-                "Criticality": st.column_config.SelectboxColumn(
-                    "Criticality (V/E/D)",
-                    options=["V", "V1", "E", "D"],
-                ),
-                "Val. Class": st.column_config.SelectboxColumn(
-                    "Val. Class",
-                    options=["PD1", "PD0"],
-                ),
-            },
         )
-        edited_spf["LEN"] = edited_spf["Short Description"].fillna("").astype(str).str.len()
-        over_40 = int((edited_spf["LEN"] > 40).sum())
-        if over_40 > 0:
-            st.warning(f"{over_40} baris memiliki Short Description > 40 karakter (akan dipotong rapi saat ekspor).")
+      else:
+        msg_hint = (
+            "Ketik **Short Description** atau **Long Description** di sebelah"
+            " kiri (lalu tekan Enter atau klik di luar kotak). Rekomendasi"
+            " standar beserta keterangannya akan otomatis muncul di sini."
+            if use_ai
+            else (
+                "Aktifkan **'Aktifkan AI'** di sidebar kiri untuk mendapatkan"
+                " rekomendasi otomatis."
+            )
+        )
+        st.container(border=True).caption(msg_hint)
 
-        st.session_state["df_spf_result"] = edited_spf
+    # Susun baris untuk tabel draft SPF di bawah
+    for idx_m, item in enumerate(st.session_state["spf_manual_list"], start=1):
+      row_copy = {"No.": idx_m, **item}
+      spf_base_rows.append(row_copy)
 
-        fill_mm_code = st.checkbox(
-            "Isi juga kolom 'MATERIAL NO.' (kolom BF, bagian MM Dept) dengan Kode Material SAP",
-            value=False,
+  # --- TABEL DRAFT & DOWNLOAD EXCEL SPF (BERLAKU UNTUK SEMUA OPSI) ---
+  if spf_base_rows:
+    df_spf_init = pd.DataFrame(spf_base_rows)
+    st.subheader(f"3. Tabel Draft SPF ({len(df_spf_init):,} Material)")
+    st.caption(
+        "Kolom LEN otomatis menghitung panjang Short Description (maks. 40"
+        " karakter SAP). Edit parameter stok, harga (IDR), criticality"
+        " (V/V1/E/D), dan deskripsi langsung di tabel:"
+    )
+
+    edited_spf = st.data_editor(
+        df_spf_init,
+        key=f"editor_spf_table_{len(df_spf_init)}",
+        use_container_width=True,
+        hide_index=True,
+        height=480,
+        disabled=["No.", "LEN"],
+        column_config={
+            "Short Description": st.column_config.TextColumn(
+                "Short Description (Max 40)", max_chars=40, width="medium"
+            ),
+            "Long Description": st.column_config.TextColumn(
+                "Long Description", width="large"
+            ),
+            "Criticality": st.column_config.SelectboxColumn(
+                "Criticality (V/E/D)",
+                options=["V", "V1", "E", "D"],
+            ),
+            "Val. Class": st.column_config.SelectboxColumn(
+                "Val. Class",
+                options=["PD1", "PD0"],
+            ),
+        },
+    )
+    edited_spf["LEN"] = (
+        edited_spf["Short Description"].fillna("").astype(str).str.len()
+    )
+    over_40 = int((edited_spf["LEN"] > 40).sum())
+    if over_40 > 0:
+      st.warning(
+          f"{over_40} baris memiliki Short Description > 40 karakter (akan"
+          " dipotong rapi saat ekspor)."
+      )
+
+    st.session_state["df_spf_result"] = edited_spf
+
+    fill_mm_code = st.checkbox(
+        "Isi juga kolom 'MATERIAL NO.' (kolom BF, bagian MM Dept) dengan Kode"
+        " Material SAP",
+        value=False,
+    )
+
+    spf_bytes = core.build_spf_bytes(
+        edited_spf,
+        meta={
+            "spf_ref": spf_ref_no,
+            "originating_dept": spf_dept,
+            "originator_ref": spf_orig_ref,
+            "required_date": spf_req_date,
+            "default_plant": default_plant,
+            "equipment": spf_eqpt,
+            "size_capacity": spf_size,
+            "equipment_tag": spf_tag,
+            "model_type": spf_model,
+            "manufacturer": spf_mfr,
+            "asset_no": spf_asset,
+            "sub_model": spf_submodel,
+            "applicable_std": spf_std,
+            "eqpmt_criticality": spf_eq_crit,
+            "reason": spf_reason,
+            "initiated_by": spf_init_by,
+            "initiated_date": spf_init_date,
+            "endorsed_mgr": spf_end_mgr,
+            "endorsed_srmgr": spf_end_srmgr,
+            "fill_mat_code": fill_mm_code,
+        },
+        template_bytes=tpl_bytes,
+    )
+    st.download_button(
+        "Download Stock Proposal Form (SPF_NEW_FORMAT.xlsx)",
+        data=spf_bytes,
+        file_name=f"SPF_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        type="primary",
+    )# ==================================================================
+# 3. MENU GENERATE SPF (STOCK PROPOSAL FORM)
+# ==================================================================
+elif selected_menu == MENU_LIST[3]:
+  st.title("3️⃣ Generate SPF (Stock Proposal Form)")
+  st.caption(
+      "Susun dokumen Stock Proposal Form sesuai format resmi SEARAH (SPF- NEW"
+      " FORMAT) dengan perhitungan panjang Short Text 40 karakter SAP otomatis."
+  )
+
+  # Inisialisasi Session State untuk Input Manual SPF
+  if "spf_manual_list" not in st.session_state:
+    st.session_state["spf_manual_list"] = []
+  if "spf_in_short" not in st.session_state:
+    st.session_state["spf_in_short"] = ""
+  if "spf_in_long" not in st.session_state:
+    st.session_state["spf_in_long"] = ""
+  if "spf_ai_suggestion" not in st.session_state:
+    st.session_state["spf_ai_suggestion"] = None
+  if "spf_last_checked" not in st.session_state:
+    st.session_state["spf_last_checked"] = ("", "", "")
+
+  local_spf_tpl = find_local(
+      lambda fn: ("spf_template" in fn or ("spf" in fn and fn.endswith(".xlsx")))
+  )
+  tpl_bytes = open(local_spf_tpl, "rb").read() if local_spf_tpl else None
+
+  with st.expander(
+      "Template Excel SPF Resmi (SPF- NEW FORMAT)", expanded=(tpl_bytes is None)
+  ):
+    if tpl_bytes is not None:
+      st.success(
+          "Template resmi aktif dari folder aplikasi:"
+          f" `{os.path.basename(local_spf_tpl)}`"
+      )
+    up_tpl = st.file_uploader(
+        "Upload / Ganti Template SPF (.xlsx, misal: SPF Insulation Gasket"
+        " 2026_Rev.1 31 Aug 2026.xlsx)",
+        type=["xlsx"],
+        key="up_spf_tpl",
+    )
+    if up_tpl is not None:
+      tpl_bytes = up_tpl.getvalue()
+      st.info(f"Menggunakan template unggahan: `{up_tpl.name}`")
+
+  with st.expander(
+      "1. Informasi Header & Approval SPF (SPF- NEW FORMAT)", expanded=True
+  ):
+    r1c1, r1c2, r1c3, r1c4 = st.columns([2, 1.5, 1.5, 1.5])
+    spf_dept = r1c1.selectbox(
+        "Originating Dept / Section",
+        [
+            "ID05 PCK2L OPERATION",
+            "ID 05 PCK2L DRILLING",
+            "ID01 PCML OPERATION",
+            "ID 01 PCML DRILLING",
+            "ID08 PCNM2L DRILLING",
+        ],
+    )
+    default_plant = (
+        spf_dept.split()[0]
+        if spf_dept.startswith("ID") and len(spf_dept.split()[0]) == 4
+        else "ID05"
+    )
+    spf_req_date = r1c2.text_input(
+        "Stock Required Date", value=pd.Timestamp.now().strftime("%d/%m/%Y")
+    )
+    spf_orig_ref = r1c3.text_input("Originator Ref. No.", value="")
+    spf_ref_no = r1c4.text_input("SPF Ref. No.", value="")
+
+    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    spf_eqpt = r2c1.text_input("Equipment", value="Consumable Materials")
+    spf_model = r2c2.text_input(
+        "Model or Type", placeholder="Misal: Insulation Gasket Set"
+    )
+    spf_submodel = r2c3.text_input(
+        "Sub-Model", placeholder="Misal: Very Critical Service"
+    )
+    spf_std = r2c4.text_input(
+        "Applicable Standard", value="Searah Ketapang II Ltd"
+    )
+
+    r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+    spf_size = r3c1.text_input("Size / Capacity", value="Various")
+    spf_mfr = r3c2.text_input("Manufacturer", value="Various")
+    spf_tag = r3c3.text_input("Equipment Tag No.", value="Various")
+    spf_asset = r3c4.text_input("Asset No.", value="Various P2B")
+
+    r4c1, r4c2 = st.columns([3, 1])
+    spf_reason = r4c1.text_input(
+        "Reasons for Proposal",
+        placeholder=(
+            "Misal: PROVISION INSULATION GASKET FOR SEARAH KETAPANG II LTD."
+        ),
+    )
+    spf_eq_crit = r4c2.selectbox(
+        "Eqpmt Criticality (1/2/3)", ["1", "2", "3"], index=0
+    )
+
+    st.markdown("**Blok Persetujuan (Footer SPF)**")
+    s1, s2, s3, s4 = st.columns(4)
+    spf_init_by = s1.text_input(
+        "Initiated By (Engineer/Supv)",
+        placeholder="Misal: TEGUH CAHYO / SLAMET SUBAGIO",
+    )
+    spf_end_mgr = s2.text_input(
+        "Endorsed By (Manager)", placeholder="Misal: BENTLY NURPATRIAWIRA"
+    )
+    spf_end_srmgr = s3.text_input(
+        "Endorsed By (Senior Manager)", placeholder="Misal: AULIA ARIF HIDAYAT"
+    )
+    spf_init_date = s4.text_input(
+        "Tanggal Tanda Tangan",
+        value=pd.Timestamp.now().strftime("%d %b %Y").upper(),
+    )
+
+  st.subheader("2. Sumber Data Material")
+  c_src1, c_src2, c_src3 = st.columns([2.4, 1.1, 1.1])
+  src_spf = c_src1.radio(
+      "Pilih Sumber Item:",
+      [
+          "Gunakan hasil katalogisasi sesi ini (Menu 1)",
+          "Upload file Excel daftar material / Template 1 (.xlsx)",
+          "✍️ Input Manual (Auto-Rekomendasi AI)",
+      ],
+      horizontal=True,
+  )
+  def_mat_type = c_src2.text_input("Default Material Type", value="PM1270602")
+  def_cert = c_src3.text_input("Default Certificate", value="COC/COO (2,1)")
+
+  spf_base_rows = []
+
+  # --- OPSI 1: DARI MENU 1 ---
+  if src_spf.startswith("Gunakan"):
+    if "current_t1" not in st.session_state:
+      st.info(
+          "Belum ada data dari Menu 1. Silakan proses di Menu 1 dahulu atau"
+          " pilih opsi Upload Excel / Input Manual."
+      )
+    else:
+      t1_df = to_template1(st.session_state["current_t1"])
+      for i, r in t1_df.iterrows():
+        short_40 = core.make_short_40(str(r["short"]), str(r["long"]), limit=40)
+        nm_label = (
+            f"{str(r['noun']).strip()} | {str(r['modifier']).strip()}".strip(
+                " |"
+            )
+        )
+        spf_base_rows.append({
+            "No.": i + 1,
+            "Plant": default_plant,
+            "LEN": len(short_40),
+            "Short Description": short_40,
+            "Long Description": str(r["long"]).strip(),
+            "Criticality": "D",
+            "Part / Category": nm_label,
+            "UoM": str(r["uom"]).strip().upper() or "EA",
+            "Qty Per Eqpt": "1",
+            "Qty Total": "1",
+            "Est. Annual Usage": "0",
+            "Reorder Level": "1",
+            "Max Level": "2",
+            "Initial Order Qty": "2",
+            "Est. Unit Price (IDR)": "0",
+            "Material Type": def_mat_type.strip().upper(),
+            "Val. Class": "PD1",
+            "Certificate": def_cert.strip(),
+            "Lead Time": "6 WEEK",
+            "Material Code": str(r["code"]).strip(),
+        })
+
+  # --- OPSI 2: UPLOAD EXCEL ---
+  elif src_spf.startswith("Upload"):
+    up_spf = st.file_uploader(
+        "Upload Excel Daftar Material / Template 1 (.xlsx)",
+        type=["xlsx"],
+        key="up_spf_file",
+    )
+    if up_spf is not None:
+      df_s_in = pd.read_excel(io.BytesIO(up_spf.getvalue()), dtype=str).fillna(
+          ""
+      )
+      cols_s = list(df_s_in.columns)
+
+      def idx_s(cands):
+        for c in cols_s:
+          if any(k in c.lower() for k in cands):
+            return cols_s.index(c)
+        return 0
+
+      sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+      s_code = sc1.selectbox(
+          "Kode Material (opsional)",
+          cols_s,
+          index=idx_s(["material code", "code", "material"]),
+      )
+      s_short = sc2.selectbox(
+          "Short Description", cols_s, index=idx_s(["short", "description"])
+      )
+      s_long = sc3.selectbox(
+          "Long Description", cols_s, index=idx_s(["long", "po text"])
+      )
+      s_uom = sc4.selectbox("UoM", cols_s, index=idx_s(["uom", "unit"]))
+      s_cat = sc5.selectbox(
+          "Part / Category / Noun",
+          cols_s,
+          index=idx_s(["noun", "part", "category"]),
+      )
+
+      for i, r in df_s_in.iterrows():
+        raw_s = str(r[s_short]).strip()
+        raw_l = str(r[s_long]).strip()
+        short_40 = core.make_short_40(raw_s, raw_l, limit=40)
+        spf_base_rows.append({
+            "No.": i + 1,
+            "Plant": default_plant,
+            "LEN": len(short_40),
+            "Short Description": short_40,
+            "Long Description": raw_l or raw_s,
+            "Criticality": "D",
+            "Part / Category": str(r[s_cat]).strip(),
+            "UoM": str(r[s_uom]).strip().upper() or "EA",
+            "Qty Per Eqpt": "1",
+            "Qty Total": "1",
+            "Est. Annual Usage": "0",
+            "Reorder Level": "1",
+            "Max Level": "2",
+            "Initial Order Qty": "2",
+            "Est. Unit Price (IDR)": "0",
+            "Material Type": def_mat_type.strip().upper(),
+            "Val. Class": "PD1",
+            "Certificate": def_cert.strip(),
+            "Lead Time": "6 WEEK",
+            "Material Code": str(r[s_code]).strip(),
+        })
+
+  # --- OPSI 3: INPUT MANUAL + REKOMENDASI AI OTOMATIS ---
+  else:
+    st.markdown("---")
+    col_in, col_ai = st.columns([1.15, 0.85], gap="large")
+
+    with col_in:
+      st.markdown("#### ✍️ Form Input Item SPF")
+      m1, m2 = st.columns(2)
+      man_part = m1.text_input(
+          "Part / Category / Model No.", placeholder="Misal: 1R81224YT12"
+      )
+      man_code = m2.text_input(
+          "Kode Material SAP (Opsional)", placeholder="Kosongkan jika baru"
+      )
+
+      cur_len = len(st.session_state["spf_in_short"])
+      st.text_input(
+          f"Short Description ({cur_len}/40 karakter) — tekan Enter untuk"
+          " rekomendasi AI",
+          key="spf_in_short",
+          placeholder="Misal: Valve Ball 2 inch SS316 Class 150",
+      )
+      if cur_len > 40:
+        st.error(
+            f"⚠️ Kelebihan {cur_len - 40} karakter! Batas SAP maksimal 40"
+            " karakter."
         )
 
-        spf_bytes = core.build_spf_bytes(
-            edited_spf,
-            meta={
-                "spf_ref": spf_ref_no,
-                "originating_dept": spf_dept,
-                "originator_ref": spf_orig_ref,
-                "required_date": spf_req_date,
-                "default_plant": default_plant,
-                "equipment": spf_eqpt,
-                "size_capacity": spf_size,
-                "equipment_tag": spf_tag,
-                "model_type": spf_model,
-                "manufacturer": spf_mfr,
-                "asset_no": spf_asset,
-                "sub_model": spf_submodel,
-                "applicable_std": spf_std,
-                "eqpmt_criticality": spf_eq_crit,
-                "reason": spf_reason,
-                "initiated_by": spf_init_by,
-                "initiated_date": spf_init_date,
-                "endorsed_mgr": spf_end_mgr,
-                "endorsed_srmgr": spf_end_srmgr,
-                "fill_mat_code": fill_mm_code,
-            },
-            template_bytes=tpl_bytes,
+      st.text_area(
+          "Long Description — klik di luar kotak / Ctrl+Enter untuk rekomendasi"
+          " AI",
+          key="spf_in_long",
+          height=130,
+          placeholder=(
+              "Misal:\nBall Valve\nSize: 2 inch\nBody: Stainless Steel"
+              " 316\nRating: Class 150"
+          ),
+      )
+
+      p1, p2, p3, p4 = st.columns(4)
+      man_uom = p1.selectbox("UoM", ["EA", "SET", "PC", "M", "L", "KG", "LOT"])
+      man_crit = p2.selectbox("Criticality", ["V", "V1", "E", "D"], index=3)
+      man_val = p3.selectbox("Val. Class", ["PD1", "PD0"], index=0)
+      man_lead = p4.text_input("Lead Time", value="6 WEEK")
+
+      q1, q2, q3, q4 = st.columns(4)
+      man_qty_eq = q1.text_input("Qty Per Eqpt", value="1")
+      man_qty_tot = q2.text_input("Qty Total", value="1")
+      man_rop = q3.text_input("Reorder / Max", value="1 / 2")
+      man_price = q4.text_input("Est. Price (IDR)", value="0")
+
+      if st.button(
+          "➕ Tambahkan Item ke Daftar SPF",
+          type="primary",
+          use_container_width=True,
+      ):
+        if not st.session_state["spf_in_short"].strip():
+          st.warning("Short Description wajib diisi terlebih dahulu.")
+        else:
+          rop_parts = [x.strip() for x in man_rop.split("/")]
+          rop_val = rop_parts[0] if rop_parts else "1"
+          max_val = rop_parts[1] if len(rop_parts) > 1 else "2"
+          s_final = st.session_state["spf_in_short"].strip()
+
+          st.session_state["spf_manual_list"].append({
+              "Plant": default_plant,
+              "LEN": len(s_final),
+              "Short Description": s_final,
+              "Long Description": st.session_state["spf_in_long"].strip(),
+              "Criticality": man_crit,
+              "Part / Category": man_part.strip(),
+              "UoM": man_uom,
+              "Qty Per Eqpt": man_qty_eq.strip(),
+              "Qty Total": man_qty_tot.strip(),
+              "Est. Annual Usage": "0",
+              "Reorder Level": rop_val,
+              "Max Level": max_val,
+              "Initial Order Qty": max_val,
+              "Est. Unit Price (IDR)": man_price.strip(),
+              "Material Type": def_mat_type.strip().upper(),
+              "Val. Class": man_val,
+              "Certificate": def_cert.strip(),
+              "Lead Time": man_lead.strip(),
+              "Material Code": man_code.strip(),
+          })
+          # Bersihkan form untuk item berikutnya
+          st.session_state["spf_in_short"] = ""
+          st.session_state["spf_in_long"] = ""
+          st.session_state["spf_ai_suggestion"] = None
+          st.session_state["spf_last_checked"] = ("", "", "")
+          st.rerun()
+
+    # Auto-Trigger AI saat Short/Long Description berubah
+    now_query = (
+        st.session_state["spf_in_short"].strip(),
+        st.session_state["spf_in_long"].strip(),
+        man_part.strip(),
+    )
+    if (
+        use_ai
+        and api_key
+        and (now_query[0] or now_query[1])
+        and now_query != st.session_state["spf_last_checked"]
+    ):
+      with col_ai:
+        with st.spinner("🤖 AI menyusun rekomendasi Short & Long Text..."):
+          try:
+            eq_ctx = f"{spf_eqpt} | {spf_model} | Mfr: {spf_mfr}"
+            rec_obj = core.recommend_spf_item(
+                api_key=api_key,
+                model=model,
+                short_in=now_query[0],
+                long_in=now_query[1],
+                part_no=now_query[2],
+                eq_info=eq_ctx,
+            )
+            st.session_state["spf_ai_suggestion"] = rec_obj
+            st.session_state["spf_last_checked"] = now_query
+          except Exception as err:
+            st.error(f"Gagal memanggil Gemini: {err}")
+
+    with col_ai:
+      st.markdown("#### ✨ Rekomendasi AI (Standar e-Cat / SAP)")
+      rec = st.session_state["spf_ai_suggestion"]
+      if rec:
+        st.info(f"💡 **Keterangan AI:**\n\n{rec.keterangan_ai}")
+
+        rec_len = len(rec.recommended_short_text)
+        st.markdown(
+            f"**Saran Short Description** (`{rec_len}/40 karakter`):"
         )
-        st.download_button(
-            "Download Stock Proposal Form (SPF_NEW_FORMAT.xlsx)",
-            data=spf_bytes,
-            file_name=f"SPF_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
+        st.code(rec.recommended_short_text, language=None)
+
+        st.markdown("**Saran Long Description:**")
+        st.code(rec.recommended_long_text, language=None)
+
+        def terapkan_saran_spf():
+          st.session_state["spf_in_short"] = rec.recommended_short_text
+          st.session_state["spf_in_long"] = rec.recommended_long_text
+          st.session_state["spf_last_checked"] = (
+              rec.recommended_short_text.strip(),
+              rec.recommended_long_text.strip(),
+              man_part.strip(),
+          )
+
+        st.button(
+            "✅ Terapkan Rekomendasi ke Form",
+            on_click=terapkan_saran_spf,
+            use_container_width=True,
         )
+      else:
+        msg_hint = (
+            "Ketik **Short Description** atau **Long Description** di sebelah"
+            " kiri (lalu tekan Enter atau klik di luar kotak). Rekomendasi"
+            " standar beserta keterangannya akan otomatis muncul di sini."
+            if use_ai
+            else (
+                "Aktifkan **'Aktifkan AI'** di sidebar kiri untuk mendapatkan"
+                " rekomendasi otomatis."
+            )
+        )
+        st.container(border=True).caption(msg_hint)
+
+    # Susun baris untuk tabel draft SPF di bawah
+    for idx_m, item in enumerate(st.session_state["spf_manual_list"], start=1):
+      row_copy = {"No.": idx_m, **item}
+      spf_base_rows.append(row_copy)
+
+  # --- TABEL DRAFT & DOWNLOAD EXCEL SPF (BERLAKU UNTUK SEMUA OPSI) ---
+  if spf_base_rows:
+    df_spf_init = pd.DataFrame(spf_base_rows)
+    st.subheader(f"3. Tabel Draft SPF ({len(df_spf_init):,} Material)")
+    st.caption(
+        "Kolom LEN otomatis menghitung panjang Short Description (maks. 40"
+        " karakter SAP). Edit parameter stok, harga (IDR), criticality"
+        " (V/V1/E/D), dan deskripsi langsung di tabel:"
+    )
+
+    edited_spf = st.data_editor(
+        df_spf_init,
+        key=f"editor_spf_table_{len(df_spf_init)}",
+        use_container_width=True,
+        hide_index=True,
+        height=480,
+        disabled=["No.", "LEN"],
+        column_config={
+            "Short Description": st.column_config.TextColumn(
+                "Short Description (Max 40)", max_chars=40, width="medium"
+            ),
+            "Long Description": st.column_config.TextColumn(
+                "Long Description", width="large"
+            ),
+            "Criticality": st.column_config.SelectboxColumn(
+                "Criticality (V/E/D)",
+                options=["V", "V1", "E", "D"],
+            ),
+            "Val. Class": st.column_config.SelectboxColumn(
+                "Val. Class",
+                options=["PD1", "PD0"],
+            ),
+        },
+    )
+    edited_spf["LEN"] = (
+        edited_spf["Short Description"].fillna("").astype(str).str.len()
+    )
+    over_40 = int((edited_spf["LEN"] > 40).sum())
+    if over_40 > 0:
+      st.warning(
+          f"{over_40} baris memiliki Short Description > 40 karakter (akan"
+          " dipotong rapi saat ekspor)."
+      )
+
+    st.session_state["df_spf_result"] = edited_spf
+
+    fill_mm_code = st.checkbox(
+        "Isi juga kolom 'MATERIAL NO.' (kolom BF, bagian MM Dept) dengan Kode"
+        " Material SAP",
+        value=False,
+    )
+
+    spf_bytes = core.build_spf_bytes(
+        edited_spf,
+        meta={
+            "spf_ref": spf_ref_no,
+            "originating_dept": spf_dept,
+            "originator_ref": spf_orig_ref,
+            "required_date": spf_req_date,
+            "default_plant": default_plant,
+            "equipment": spf_eqpt,
+            "size_capacity": spf_size,
+            "equipment_tag": spf_tag,
+            "model_type": spf_model,
+            "manufacturer": spf_mfr,
+            "asset_no": spf_asset,
+            "sub_model": spf_submodel,
+            "applicable_std": spf_std,
+            "eqpmt_criticality": spf_eq_crit,
+            "reason": spf_reason,
+            "initiated_by": spf_init_by,
+            "initiated_date": spf_init_date,
+            "endorsed_mgr": spf_end_mgr,
+            "endorsed_srmgr": spf_end_srmgr,
+            "fill_mat_code": fill_mm_code,
+        },
+        template_bytes=tpl_bytes,
+    )
+    st.download_button(
+        "Download Stock Proposal Form (SPF_NEW_FORMAT.xlsx)",
+        data=spf_bytes,
+        file_name=f"SPF_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+        mime=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        type="primary",
+    )
